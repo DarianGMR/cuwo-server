@@ -1,66 +1,136 @@
 $(document).ready(function () {
-    var ClassArray = {"1": "Guerrero", "2": "Ranger", "3": "Mago", "4": "Pícaro"};
-    var PlayersArr = {};
-    var Specializations = [
+    const ClassArray = {
+        0: "Sin Clase",
+        1: "Guerrero",
+        2: "Ranger",
+        3: "Mago",
+        4: "Pícaro"
+    };
+    
+    const Specializations = [
         ["Berserker", "Guardian"],
         ["Sniper", "Scout"],
         ["Fire", "Water"],
         ["Assassin", "Ninja"]
     ];
-    var refresh_interval = null;
     
-    function add_player(data, id) {
-        PlayersArr[id] = data;
-        var spec = Specializations[data['klass'] - 1][data['specialz']];
-        $('table.players tbody').append(
-            "<tr data-id=" + id + "><td>" + id + "</td>" +
-            "<td>" + data['name'] + "</td>" +
-            "<td>" + data['level'] + "</td>" +
-            "<td>" + ClassArray[data['klass']] + "</td>" +
-            "<td>" + spec + "</td></tr>"
-        );
-    }
+    let playersData = {};
+    let updateInterval = null;
     
-    function update_players() {
+    // ============= TAB SWITCHING =============
+    $('.nav-item').on('click', function(e) {
+        e.preventDefault();
+        const tabName = $(this).data('tab');
+        
+        // Remove active class from all
+        $('.nav-item').removeClass('active');
+        $('.tab-content').removeClass('active');
+        
+        // Add active class
+        $(this).addClass('active');
+        $('#' + tabName).addClass('active');
+    });
+    
+    // ============= PLAYERS UPDATE =============
+    function updatePlayers() {
         $.ajax({
             url: '/api/players',
             type: 'GET',
             dataType: 'json',
             success: function(data) {
-                // Borrar jugadores actuales
-                $('table.players tbody').html('');
-                PlayersArr = {};
-                
-                // Agregar nuevos
-                for (var id in data) {
-                    if (id !== 'response' && data[id]['name']) {
-                        add_player(data[id], id);
-                    }
+                if (!data || !Array.isArray(data.players)) {
+                    return;
                 }
+                
+                playersData = {};
+                const html = [];
+                
+                if (data.players.length === 0) {
+                    html.push(`
+                        <div class="empty-state">
+                            <i class="fas fa-inbox"></i>
+                            <p>No hay jugadores conectados</p>
+                        </div>
+                    `);
+                } else {
+                    data.players.forEach(player => {
+                        playersData[player.id] = player;
+                        
+                        const className = ClassArray[player.klass] || "Desconocida";
+                        const spec = player.klass > 0 && player.klass <= 4 
+                            ? Specializations[player.klass - 1][player.specialz] || "Desconocida"
+                            : "Desconocida";
+                        
+                        const firstLetter = (player.name || "?")[0].toUpperCase();
+                        
+                        html.push(`
+                            <div class="player-card">
+                                <div class="player-header">
+                                    <div class="player-avatar">${firstLetter}</div>
+                                    <div class="player-name">
+                                        <div class="name">${player.name}</div>
+                                        <div class="id">ID: ${player.id}</div>
+                                    </div>
+                                    <div class="player-level">Lv. ${player.level}</div>
+                                </div>
+                                <div class="player-details">
+                                    <div class="detail-item">
+                                        <div class="label">Clase</div>
+                                        <div class="value">${className}</div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <div class="label">Especialización</div>
+                                        <div class="value">${spec}</div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <div class="label">Salud</div>
+                                        <div class="value">${player.hp} HP</div>
+                                    </div>
+                                    <div class="detail-item">
+                                        <div class="label">Posición</div>
+                                        <div class="value">X:${player.x || 0}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `);
+                    });
+                }
+                
+                $('#playersContainer').html(html.join(''));
+                $('#playerCount').text(data.count);
+                
             },
             error: function() {
-                console.log("Error al cargar jugadores");
+                // Error silencioso, reintentar
             }
         });
     }
     
-    // Cambiar tabs
-    $('ul.nav li').on('click', function() {
-        var target_tab = $(this).attr('data-name');
-        $('ul.nav > li.current_tab').removeClass('current_tab');
-        $(this).addClass('current_tab');
-        $('.content_container > div:not(.hidden_tab)').addClass('hidden_tab');
-        $('.content_container > div#' + target_tab).removeClass('hidden_tab');
-    });
+    // ============= SERVER INFO UPDATE =============
+    function updateServerInfo() {
+        $.ajax({
+            url: '/api/server',
+            type: 'GET',
+            dataType: 'json',
+            success: function(data) {
+                if (!data) return;
+                
+                $('#serverPlayers').text(data.players_online + '/' + data.max_players);
+                
+                const hours = Math.floor(data.uptime / 3600);
+                const minutes = Math.floor((data.uptime % 3600) / 60);
+                $('#uptime').text(hours + ' horas, ' + minutes + ' minutos');
+            },
+            error: function() {
+                // Error silencioso
+            }
+        });
+    }
     
-    // Actualizar jugadores cada 2 segundos
-    refresh_interval = setInterval(update_players, 2000);
-    update_players();
-    
-    // Chat
+    // ============= CHAT =============
     $('#chatInput').on('keypress', function(e) {
-        if (e.which == 13) {
-            var message = $(this).val();
+        if (e.which === 13) {
+            const message = $(this).val().trim();
             if (message) {
                 $.ajax({
                     url: '/api/command',
@@ -73,14 +143,42 @@ $(document).ready(function () {
                     }),
                     success: function() {
                         $('#chatInput').val('');
-                        $('#chatMessages').append(
-                            '<p><span>Tu:</span> ' + message + '</p>'
-                        );
-                        $("#chatMessages").scrollTop($("#chatMessages")[0].scrollHeight);
+                        addChatMessage('TU', message, 'user');
                     }
                 });
             }
             return false;
+        }
+    });
+    
+    $('#chatSendBtn').on('click', function() {
+        $('#chatInput').trigger('keypress');
+    });
+    
+    function addChatMessage(author, text, type = 'system') {
+        const messageHtml = `
+            <div class="chat-message ${type}">
+                <span class="message-author">${author}</span>
+                <span class="message-text">${text}</span>
+            </div>
+        `;
+        $('#chatMessages').append(messageHtml);
+        $('#chatMessages').scrollTop($('#chatMessages')[0].scrollHeight);
+    }
+    
+    // ============= INITIALIZATION =============
+    updatePlayers();
+    updateServerInfo();
+    
+    updateInterval = setInterval(() => {
+        updatePlayers();
+        updateServerInfo();
+    }, 2000);
+    
+    // Clean up on unload
+    $(window).on('unload', function() {
+        if (updateInterval) {
+            clearInterval(updateInterval);
         }
     });
 });
