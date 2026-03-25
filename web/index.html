@@ -21,13 +21,13 @@
             </div>
             
             <nav class="nav-menu">
-                <a href="#" class="nav-item active" data-tab="players">
-                    <i class="fas fa-users"></i>
-                    <span>Jugadores</span>
-                </a>
-                <a href="#" class="nav-item" data-tab="server">
+                <a href="#" class="nav-item active" data-tab="server">
                     <i class="fas fa-server"></i>
                     <span>Servidor</span>
+                </a>
+                <a href="#" class="nav-item" data-tab="players">
+                    <i class="fas fa-users"></i>
+                    <span>Jugadores</span>
                 </a>
                 <a href="#" class="nav-item" data-tab="console">
                     <i class="fas fa-terminal"></i>
@@ -50,32 +50,8 @@
         
         <!-- Main Content -->
         <main class="content">
-            <!-- Jugadores Tab -->
-            <section id="players" class="tab-content active">
-                <div class="section-header">
-                    <h2><i class="fas fa-users"></i> Jugadores Conectados</h2>
-                    <div class="header-stats">
-                        <div class="stat">
-                            <span class="stat-value" id="playerCount">0</span>
-                            <span class="stat-label">Conectados</span>
-                        </div>
-                        <div class="stat">
-                            <span class="stat-value">100</span>
-                            <span class="stat-label">Máximo</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="players-grid" id="playersContainer">
-                    <div class="empty-state">
-                        <i class="fas fa-inbox"></i>
-                        <p>No hay jugadores conectados</p>
-                    </div>
-                </div>
-            </section>
-            
             <!-- Servidor Tab -->
-            <section id="server" class="tab-content">
+            <section id="server" class="tab-content active">
                 <div class="section-header">
                     <h2><i class="fas fa-server"></i> Estado del Servidor</h2>
                 </div>
@@ -103,15 +79,41 @@
                 </div>
             </section>
             
+            <!-- Jugadores Tab -->
+            <section id="players" class="tab-content">
+                <div class="section-header">
+                    <h2><i class="fas fa-users"></i> Jugadores Conectados</h2>
+                    <div class="header-stats">
+                        <div class="stat">
+                            <span class="stat-value" id="playerCount">0</span>
+                            <span class="stat-label">Conectados</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="players-list" id="playersContainer">
+                    <div class="empty-state">
+                        <i class="fas fa-inbox"></i>
+                        <p>No hay jugadores conectados</p>
+                    </div>
+                </div>
+            </section>
+            
             <!-- Consola Tab -->
             <section id="console" class="tab-content">
                 <div class="section-header">
                     <h2><i class="fas fa-terminal"></i> Consola</h2>
+                    <button class="btn-clear-log" id="clearLogBtn">
+                        <i class="fas fa-trash"></i> Limpiar Log
+                    </button>
                 </div>
                 
                 <div class="console-container">
                     <div class="console-output" id="consoleOutput">
                         <div class="console-line"><span class="console-success">✓</span> Servidor web conectado</div>
+                    </div>
+                    <div class="console-input-wrapper">
+                        <input type="text" id="consoleInput" placeholder="Escribe comando..." class="console-input">
                     </div>
                 </div>
             </section>
@@ -153,6 +155,44 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- Modal de Expulsión -->
+    <div id="kickModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Expulsar Jugador</h3>
+                <button class="modal-close" data-dismiss="kickModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="kickPlayerName"></p>
+                <label>Razón de la expulsión:</label>
+                <textarea id="kickReason" placeholder="Escribe la razón..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" data-dismiss="kickModal">Cancelar</button>
+                <button class="btn-confirm" id="kickConfirmBtn">Expulsar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Baneo -->
+    <div id="banModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Banear Jugador</h3>
+                <button class="modal-close" data-dismiss="banModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="banPlayerName"></p>
+                <label>Razón del baneo:</label>
+                <textarea id="banReason" placeholder="Escribe la razón..."></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" data-dismiss="banModal">Cancelar</button>
+                <button class="btn-confirm" id="banConfirmBtn">Banear</button>
+            </div>
+        </div>
     </div>
     
     <script src="js/init.js"></script>
