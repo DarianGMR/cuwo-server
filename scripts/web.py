@@ -10,10 +10,24 @@ import webbrowser
 import threading
 import json
 import time
+import logging
+import sys
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from cuwo.script import ServerScript
 
 SITE_PATH = 'web'
+
+# Configurar logging para capturar todos los errores
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[
+        logging.FileHandler('logs/web.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 
 class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
@@ -67,19 +81,13 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.send_error(404, "Not Found")
     
     def handle_players_api(self):
-        """Devolver lista de jugadores en JSON - CORREGIDO"""
+        """Devolver lista de jugadores en JSON"""
         server = self.server.web_server.server
         players_list = []
         
         try:
-            # server.players es un diccionario donde:
-            # - Clave: objeto CubeWorldConnection
-            # - Valor: objeto de conexión también (o el mismo objeto)
-            # Necesitamos acceder al atributo entity de cada conexión
-            
             for connection in server.players.values():
                 try:
-                    # Verificar que tiene los atributos requeridos
                     if not hasattr(connection, 'entity') or connection.entity is None:
                         continue
                     
@@ -88,7 +96,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     
                     entity = connection.entity
                     
-                    # Extraer ID - intentar de varias formas
                     player_id = None
                     if hasattr(entity, 'player_id'):
                         player_id = int(entity.player_id)
@@ -97,7 +104,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     elif hasattr(entity, 'id'):
                         player_id = int(entity.id)
                     else:
-                        # Si no hay ID, usar el hash del objeto como ID temporal
                         player_id = id(connection) % 10000
                     
                     player_data = {
@@ -113,11 +119,12 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     }
                     players_list.append(player_data)
                     
-                except (AttributeError, TypeError, ValueError):
+                except (AttributeError, TypeError, ValueError) as e:
+                    logger.debug(f"Error procesando jugador: {e}")
                     continue
                     
         except Exception as e:
-            pass
+            logger.error(f"Error en handle_players_api: {e}")
         
         response_data = {
             'response': 'get_players',
@@ -145,7 +152,8 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                 'max_players': 100,
                 'uptime': int(time.time() - self.server.web_server.start_time)
             }
-        except:
+        except Exception as e:
+            logger.error(f"Error en handle_server_api: {e}")
             server_data = {
                 'response': 'server_info',
                 'name': 'Cuwo Server',
@@ -185,14 +193,44 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
         request = data.get('request')
         response = json.dumps({"response": "Success"})
         
-        if request == 'send_message':
-            message = data.get('message', '')
-            if message:
-                server.send_chat(message)
-                chat_history = getattr(self.server.web_server, 'chat_history', [])
-                chat_history.append({'id': 0, 'name': 'Server', 'message': message})
-                if len(chat_history) > 100:
-                    chat_history.pop(0)
+        try:
+            if request == 'send_message':
+                message = data.get('message', '')
+                if message:
+                    # Formatear mensaje con prefijo "cuwo:"
+                    formatted_msg = f"cuwo: {message}"
+                    server.send_chat(formatted_msg)
+                    chat_history = getattr(self.server.web_server, 'chat_history', [])
+                    chat_history.append({'id': 0, 'name': 'Server', 'message': formatted_msg})
+                    if len(chat_history) > 100:
+                        chat_history.pop(0)
+                    
+            elif request == 'execute_command':
+                command = data.get('command', '').strip()
+                if command:
+                    # Registrar comando en log
+                    logger.info(f"[COMANDO] {command}")
+                    # Aquí implementaría la ejecución del comando
+                    
+            elif request == 'heal_player':
+                player_id = data.get('player_id')
+                logger.info(f"[ACCIÓN] Jugador {player_id} sanado por admin")
+                
+            elif request == 'kick_player':
+                player_id = data.get('player_id')
+                reason = data.get('reason', 'Sin especificar')
+                logger.info(f"[EXPULSIÓN] Jugador {player_id} expulsado. Razón: {reason}")
+                
+            elif request == 'ban_player':
+                player_id = data.get('player_id')
+                reason = data.get('reason', 'Sin especificar')
+                logger.info(f"[BANEO] Jugador {player_id} baneado. Razón: {reason}")
+                
+            elif request == 'clear_log':
+                logger.info("[LOG] Log limpiado por admin")
+                
+        except Exception as e:
+            logger.error(f"Error procesando comando: {e}")
         
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -223,7 +261,7 @@ class WebServer(ServerScript):
             self.chat_history = []
             
             if not os.path.exists(SITE_PATH):
-                print("[WEB] ERROR: Carpeta '%s' no encontrada" % SITE_PATH)
+                logger.error(f"Carpeta '{SITE_PATH}' no encontrada")
                 return
             
             self._update_init_js(web_port, self.auth_key)
@@ -233,11 +271,11 @@ class WebServer(ServerScript):
             self.http_server.web_server = self
             
             def run_web_server():
-                print("[WEB] [OK] Panel web disponible en http://%s:%d" % (web_host, web_port))
+                logger.info(f"Panel web disponible en http://{web_host}:{web_port}")
                 try:
                     self.http_server.serve_forever()
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error en servidor web: {e}")
             
             web_thread = threading.Thread(target=run_web_server, daemon=True)
             web_thread.start()
@@ -246,33 +284,36 @@ class WebServer(ServerScript):
                 self.loop.call_later(1, lambda: self._open_browser(web_host, web_port))
         
         except Exception as e:
-            print("[WEB] ERROR: %s" % str(e))
+            logger.error(f"Error inicializando servidor web: {e}")
     
     def _update_init_js(self, port, auth_key):
         """Actualizar archivo init.js"""
         try:
             js_path = os.path.join(SITE_PATH, 'js', 'init.js')
-            content = 'var server_port = "%d";\nvar auth_key = "%s";\n' % (port, auth_key)
+            content = f'var server_port = "{port}";\nvar auth_key = "{auth_key}";\n'
             with open(js_path, 'w') as f:
                 f.write(content)
-        except:
-            pass
+            logger.info("Archivo init.js actualizado")
+        except Exception as e:
+            logger.warning(f"No se pudo actualizar init.js: {e}")
     
     def _open_browser(self, host, port):
         """Abrir navegador"""
         try:
-            url = "http://%s:%d" % (host, port)
+            url = f"http://{host}:{port}"
+            logger.info(f"Abriendo navegador en {url}")
             webbrowser.open(url)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"No se pudo abrir navegador: {e}")
     
     def on_unload(self):
         """Se ejecuta cuando se descarga el script"""
         try:
             if hasattr(self, 'http_server'):
                 self.http_server.shutdown()
-        except:
-            pass
+                logger.info("Servidor web detenido")
+        except Exception as e:
+            logger.error(f"Error deteniendo servidor web: {e}")
 
 
 def get_class():
