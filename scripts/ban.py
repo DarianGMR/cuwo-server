@@ -1,25 +1,8 @@
-# Copyright (c) Mathias Kaerlev 2013-2017.
-#
-# This file is part of cuwo.
-#
-# cuwo is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# cuwo is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with cuwo.  If not, see <http://www.gnu.org/licenses/>.
-
 """
 Ban management - Banea por entity_id (jugador específico) y por IP por separado
 """
 
-from cuwo.script import ServerScript, command, admin
+from cuwo.script import ServerScript, ConnectionScript, command, admin
 
 SELF_BANNED_PLAYER = 'Estás baneado como jugador: {reason}'
 SELF_BANNED_IP = 'Tu IP está baneada: {reason}'
@@ -31,7 +14,23 @@ PLAYER_BAN_DATA = 'banlist_players_entities'
 IP_BAN_DATA = 'banlist_ips'
 
 
+class BanConnectionScript(ConnectionScript):
+    """Script de conexión para verificar bans después de obtener entity_id"""
+    
+    def on_join(self, event):
+        """Se llama cuando el jugador entra completamente al servidor"""
+        # Verificar si el jugador está baneado por entity_id
+        if self.connection.entity_id is not None:
+            if self.parent.is_player_banned(self.connection.entity_id):
+                reason = self.parent.banned_players.get(str(self.connection.entity_id), {}).get('reason', DEFAULT_REASON)
+                self.connection.send_chat(SELF_BANNED_PLAYER.format(reason=reason))
+                self.connection.disconnect()
+                return False
+
+
 class BanServer(ServerScript):
+    connection_class = BanConnectionScript
+    
     def on_load(self):
         # Cargar listas de bans por separado
         # Para ban de jugadores, guardamos {entity_id: reason}
