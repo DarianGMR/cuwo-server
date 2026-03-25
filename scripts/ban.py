@@ -1,22 +1,40 @@
+# Copyright (c) Mathias Kaerlev 2013-2017.
+#
+# This file is part of cuwo.
+#
+# cuwo is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# cuwo is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with cuwo.  If not, see <http://www.gnu.org/licenses/>.
+
 """
-Ban management - Mejorado para banear jugadores por nombre y por IP por separado
+Ban management - Banea por entity_id (jugador específico) y por IP por separado
 """
 
 from cuwo.script import ServerScript, command, admin
 
-SELF_BANNED_PLAYER = 'Estás baneado: {reason}'
+SELF_BANNED_PLAYER = 'Estás baneado como jugador: {reason}'
 SELF_BANNED_IP = 'Tu IP está baneada: {reason}'
-PLAYER_BANNED = '{name} ha sido baneado: {reason}'
+PLAYER_BANNED = '{name} ha sido baneado como jugador: {reason}'
 IP_BANNED = 'IP {ip} ha sido baneada: {reason}'
 DEFAULT_REASON = 'Sin motivo'
 
-PLAYER_BAN_DATA = 'banlist_players'
+PLAYER_BAN_DATA = 'banlist_players_entities'
 IP_BAN_DATA = 'banlist_ips'
 
 
 class BanServer(ServerScript):
     def on_load(self):
         # Cargar listas de bans por separado
+        # Para ban de jugadores, guardamos {entity_id: reason}
         self.banned_players = self.server.load_data(PLAYER_BAN_DATA, {})
         self.banned_ips = self.server.load_data(IP_BAN_DATA, {})
 
@@ -24,15 +42,18 @@ class BanServer(ServerScript):
         self.server.save_data(PLAYER_BAN_DATA, self.banned_players)
         self.server.save_data(IP_BAN_DATA, self.banned_ips)
 
-    def ban_player(self, player_name, reason):
-        """Banea a un jugador por su nombre (no por IP)"""
-        player_name_lower = player_name.lower()
-        self.banned_players[player_name_lower] = reason
+    def ban_player(self, entity_id, player_name, reason):
+        """Banea un jugador específico por su entity_id (NO por nombre)"""
+        entity_id_str = str(entity_id)
+        self.banned_players[entity_id_str] = {
+            'name': player_name,
+            'reason': reason
+        }
         self.save_bans()
         
         banned_players = []
         for connection in self.server.connections.copy():
-            if not connection.name or connection.name.lower() != player_name_lower:
+            if connection.entity_id != entity_id:
                 continue
             
             name = connection.name
@@ -47,7 +68,7 @@ class BanServer(ServerScript):
         return banned_players
 
     def ban_ip(self, ip, reason):
-        """Banea una IP (no afecta al nombre del jugador)"""
+        """Banea una IP (no afecta al entity_id del jugador)"""
         self.banned_ips[ip] = reason
         self.save_bans()
         
@@ -71,15 +92,15 @@ class BanServer(ServerScript):
         
         return banned_players
 
-    def unban_player(self, player_name):
-        """Desbanea a un jugador por su nombre"""
+    def unban_player(self, entity_id):
+        """Desbanea un jugador por su entity_id"""
         try:
-            player_name_lower = player_name.lower()
-            self.banned_players.pop(player_name_lower)
+            entity_id_str = str(entity_id)
+            player_info = self.banned_players.pop(entity_id_str)
             self.save_bans()
-            return True
+            return True, player_info.get('name', 'Unknown')
         except KeyError:
-            return False
+            return False, None
 
     def unban_ip(self, ip):
         """Desbanea una IP"""
@@ -90,9 +111,9 @@ class BanServer(ServerScript):
         except KeyError:
             return False
 
-    def is_player_banned(self, player_name):
-        """Verifica si un jugador está baneado por nombre"""
-        return player_name.lower() in self.banned_players
+    def is_player_banned(self, entity_id):
+        """Verifica si un jugador está baneado por entity_id"""
+        return str(entity_id) in self.banned_players
 
     def is_ip_banned(self, ip):
         """Verifica si una IP está baneada"""
@@ -106,7 +127,7 @@ class BanServer(ServerScript):
         if ip in self.banned_ips:
             return SELF_BANNED_IP.format(reason=self.banned_ips[ip])
         
-        # Las conexiones iniciales no tienen nombre de jugador, así que solo podemos verificar IP aquí
+        # Las conexiones iniciales no tienen entity_id aún, así que solo podemos verificar IP aquí
         return None
 
 
@@ -117,32 +138,48 @@ def get_class():
 @command
 @admin
 def ban(script, name, *reason):
-    """Banea un jugador por su nombre (no por IP)."""
-    reason = ' '.join(reason) or DEFAULT_REASON
-    banned = script.parent.ban_player(name, reason)
+    """Banea un jugador específico por su nombre actual (banea al jugador por entity_id, NO al nombre)."""
+    reason_str = ' '.join(reason) or DEFAULT_REASON
+    
+    # Encontrar el jugador por nombre
+    player = script.get_player(name)
+    if player is None:
+        return f'No se encontró al jugador "{name}"'
+    
+    # Banear por entity_id del jugador
+    entity_id = player.entity_id
+    player_name = player.name
+    banned = script.parent.ban_player(entity_id, player_name, reason_str)
+    
     if banned:
-        return f'Jugador "{name}" baneado exitosamente'
+        return f'Jugador "{player_name}" (ID: {entity_id}) baneado correctamente'
     else:
-        return f'No se encontró al jugador "{name}" en el servidor'
+        return f'Error al banear a "{player_name}"'
 
 
 @command
 @admin
 def banip(script, ip, *reason):
-    """Banea una IP (no afecta al nombre del jugador)."""
-    reason = ' '.join(reason) or DEFAULT_REASON
-    banned = script.parent.ban_ip(ip, reason)
+    """Banea una IP (no afecta al jugador individual)."""
+    reason_str = ' '.join(reason) or DEFAULT_REASON
+    banned = script.parent.ban_ip(ip, reason_str)
     return f'{len(banned)} jugador(es) conectado(s) desde IP {ip} fue(ron) baneado(s)'
 
 
 @command
 @admin
-def unban(script, name):
-    """Desbanea un jugador por su nombre."""
-    if script.parent.unban_player(name):
-        return f'Jugador "{name}" desbaneado exitosamente'
+def unban(script, entity_id_str):
+    """Desbanea un jugador por su entity_id."""
+    try:
+        entity_id = int(entity_id_str)
+    except ValueError:
+        return f'Entity ID inválido: "{entity_id_str}"'
+    
+    success, player_name = script.parent.unban_player(entity_id)
+    if success:
+        return f'Jugador (ID: {entity_id}) desbaneado exitosamente'
     else:
-        return f'Jugador "{name}" no encontrado en la lista de baneados'
+        return f'Jugador con ID {entity_id} no encontrado en la lista de baneados'
 
 
 @command
