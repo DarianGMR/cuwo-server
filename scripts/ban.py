@@ -28,9 +28,13 @@ class BanServer(ServerScript):
         """Guardar lista de IPs baneadas"""
         self.server.save_data(IP_BAN_DATA, self.banned_ips)
 
-    def ban_ip(self, ip, reason):
-        """Banea una IP"""
-        self.banned_ips[ip] = reason
+    def ban_ip(self, ip, reason, player_name=None):
+        """Banea una IP y guarda el nombre del jugador"""
+        # Guardar como dict con nombre y razón
+        self.banned_ips[ip] = {
+            'reason': reason,
+            'name': player_name or 'Desconocido'
+        }
         self.save_bans()
         
         banned_players = []
@@ -67,14 +71,24 @@ class BanServer(ServerScript):
 
     def get_ban_reason(self, ip):
         """Obtiene la razón del ban de una IP"""
-        return self.banned_ips.get(ip, DEFAULT_REASON)
+        ban_data = self.banned_ips.get(ip, {})
+        if isinstance(ban_data, dict):
+            return ban_data.get('reason', DEFAULT_REASON)
+        return ban_data or DEFAULT_REASON
+
+    def get_ban_name(self, ip):
+        """Obtiene el nombre del jugador baneado"""
+        ban_data = self.banned_ips.get(ip, {})
+        if isinstance(ban_data, dict):
+            return ban_data.get('name', 'Desconocido')
+        return 'Desconocido'
 
     def on_connection_attempt(self, event):
         """Verifica si la IP está baneada ANTES de conectar"""
         ip = event.address[0]
         
         if ip in self.banned_ips:
-            reason = self.banned_ips[ip]
+            reason = self.get_ban_reason(ip)
             return SELF_BANNED_IP.format(reason=reason)
         
         return None
@@ -99,8 +113,8 @@ def ban(script, name, *reason):
     ip = player.address[0]
     player_name = player.name
     
-    # Banear la IP
-    script.parent.ban_ip(ip, reason_str)
+    # Banear la IP (ahora con el nombre del jugador)
+    script.parent.ban_ip(ip, reason_str, player_name)
     
     return f'IP {ip} del jugador "{player_name}" baneada correctamente. Razón: {reason_str}'
 
@@ -123,8 +137,14 @@ def banlist(script):
         return 'No hay IPs baneadas'
     
     ban_list = []
-    for ip, reason in script.parent.banned_ips.items():
-        ban_list.append(f'{ip}: {reason}')
+    for ip, ban_data in script.parent.banned_ips.items():
+        if isinstance(ban_data, dict):
+            reason = ban_data.get('reason', DEFAULT_REASON)
+            name = ban_data.get('name', 'Desconocido')
+            ban_list.append(f'{ip} ({name}): {reason}')
+        else:
+            # Compatibilidad con bans antiguos en formato string
+            ban_list.append(f'{ip}: {ban_data}')
     
     message = f'IPs baneadas ({len(ban_list)}): ' + ' | '.join(ban_list)
     return message
