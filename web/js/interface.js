@@ -18,6 +18,7 @@ $(document).ready(function () {
     let bansData = {};
     let updateInterval = null;
     let selectedPlayerId = null;
+    let selectedUnbanIp = null;
     let previousPlayerIds = new Set();
     
     // ============= TAB SWITCHING =============
@@ -78,20 +79,31 @@ $(document).ready(function () {
                     return;
                 }
                 
+                const playersContainer = $('#playersContainer');
                 const currentPlayerIds = new Set(data.players.map(p => p.id));
                 const disconnectedIds = new Set([...previousPlayerIds].filter(id => !currentPlayerIds.has(id)));
                 
-                // Remover jugadores desconectados
+                // Remover jugadores desconectados con animaci��n
                 disconnectedIds.forEach(playerId => {
                     $(`#playersContainer .player-item[data-player-id="${playerId}"]`).fadeOut(300, function() {
                         $(this).remove();
+                        
+                        // Si la lista está vacía, mostrar empty-state
+                        if (playersContainer.find('.player-item').length === 0) {
+                            playersContainer.html(`
+                                <div class="empty-state">
+                                    <i class="fas fa-inbox"></i>
+                                    <p>No hay jugadores conectados</p>
+                                </div>
+                            `);
+                        }
                     });
                     delete playersData[playerId];
                 });
                 
                 if (data.players.length === 0) {
-                    if ($('#playersContainer .player-item').length === 0) {
-                        $('#playersContainer').html(`
+                    if (playersContainer.find('.player-item').length === 0) {
+                        playersContainer.html(`
                             <div class="empty-state">
                                 <i class="fas fa-inbox"></i>
                                 <p>No hay jugadores conectados</p>
@@ -99,10 +111,8 @@ $(document).ready(function () {
                         `);
                     }
                 } else {
-                    const emptyState = $('#playersContainer .empty-state');
-                    if (emptyState.length > 0) {
-                        emptyState.remove();
-                    }
+                    // Remover empty-state si existe
+                    playersContainer.find('.empty-state').remove();
                     
                     data.players.forEach(player => {
                         playersData[player.id] = player;
@@ -126,11 +136,11 @@ $(document).ready(function () {
                                     $value.text(player.ip);
                                 } else if (labelText.includes('salud')) {
                                     $value.text(player.hp + ' HP');
-                                } else if (labelText.includes('especialidad')) {
+                                } else if (labelText.includes('especialización')) {
                                     $value.text(spec);
                                 } else if (labelText.includes('posición')) {
                                     $value.text(`X:${player.x || 0}`);
-                                } else if (labelText.includes('tiempo de juego')) {
+                                } else if (labelText.includes('tiempo')) {
                                     $value.text(playtimeStr);
                                 }
                             });
@@ -138,7 +148,7 @@ $(document).ready(function () {
                             const firstLetter = (player.name || "?")[0].toUpperCase();
                             
                             const newItem = `
-                                <div class="player-item" data-player-id="${player.id}">
+                                <div class="player-item" data-player-id="${player.id}" style="animation: slideUp 0.5s ease;">
                                     <div class="player-avatar">${firstLetter}</div>
                                     <div class="player-info">
                                         <div class="player-name">${player.name}</div>
@@ -152,7 +162,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">${className}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">especialidad</span>
+                                                <span class="player-detail-label">Especialización</span>
                                                 <span class="player-detail-value">${spec}</span>
                                             </div>
                                             <div class="player-detail-item">
@@ -164,7 +174,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">X:${player.x || 0}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">Tiempo de juego</span>
+                                                <span class="player-detail-label">Tiempo</span>
                                                 <span class="player-detail-value">${playtimeStr}</span>
                                             </div>
                                         </div>
@@ -183,7 +193,7 @@ $(document).ready(function () {
                                 </div>
                             `;
                             
-                            $('#playersContainer').append(newItem);
+                            playersContainer.append(newItem);
                         }
                     });
                 }
@@ -215,6 +225,16 @@ $(document).ready(function () {
                 if (data.bans.length === 0) {
                     // Solo mostrar empty-state si hay items actualmente
                     if (bansContainer.find('.ban-item').length > 0) {
+                        bansContainer.fadeOut(300, function() {
+                            bansContainer.html(`
+                                <div class="empty-state">
+                                    <i class="fas fa-check-circle"></i>
+                                    <p>No hay jugadores baneados</p>
+                                </div>
+                            `);
+                            bansContainer.fadeIn(300);
+                        });
+                    } else if (bansContainer.find('.empty-state').length === 0) {
                         bansContainer.html(`
                             <div class="empty-state">
                                 <i class="fas fa-check-circle"></i>
@@ -229,12 +249,22 @@ $(document).ready(function () {
                     // Crear set de IPs actuales en el servidor
                     const serverIps = new Set(data.bans.map(b => b.ip));
                     
-                    // Remover bans que ya no existen
+                    // Remover bans que ya no existen con animación
                     bansContainer.find('.ban-item').each(function() {
                         const ip = $(this).data('ban-ip');
                         if (!serverIps.has(ip)) {
                             $(this).fadeOut(300, function() {
                                 $(this).remove();
+                                
+                                // Si la lista está vacía después de remover, mostrar empty-state
+                                if (bansContainer.find('.ban-item').length === 0) {
+                                    bansContainer.html(`
+                                        <div class="empty-state">
+                                            <i class="fas fa-check-circle"></i>
+                                            <p>No hay jugadores baneados</p>
+                                        </div>
+                                    `);
+                                }
                             });
                         }
                     });
@@ -253,9 +283,9 @@ $(document).ready(function () {
                                 existingBan.find('.ban-detail-value:last').text(ban.reason || 'Sin razón');
                             }
                         } else {
-                            // Agregar nuevo ban sin animación
+                            // Agregar nuevo ban CON animación
                             const banItem = `
-                                <div class="ban-item" data-ban-ip="${ban.ip}">
+                                <div class="ban-item" data-ban-ip="${ban.ip}" style="animation: slideUp 0.5s ease;">
                                     <div class="ban-avatar">
                                         <i class="fas fa-ban"></i>
                                     </div>
@@ -327,65 +357,11 @@ $(document).ready(function () {
             e.preventDefault();
             const banIp = $(this).data('ban-ip');
             const banItem = $(this).closest('.ban-item');
+            const banName = banItem.find('.ban-name').text();
             
-            if (confirm(`¿Estás seguro de que deseas desbanear la IP ${banIp}?`)) {
-                unbanIp(banIp, banItem);
-            }
-        });
-    }
-
-    function unbanIp(ip, banItem) {
-        $.ajax({
-            url: '/api/command',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({
-                request: 'unban_ip',
-                ip: ip,
-                key: auth_key
-            }),
-            success: function(response) {
-                if (response.success) {
-                    addConsoleMessage('success', `IP ${ip} desbaneada correctamente`);
-                    
-                    // Remover el item con animación
-                    banItem.fadeOut(300, function() {
-                        $(this).remove();
-                        
-                        // Actualizar contador
-                        const newCount = $('#bansContainer .ban-item').length;
-                        $('#banCount').text(newCount);
-                        
-                        // Mostrar mensaje vacío si no hay bans
-                        if (newCount === 0) {
-                            $('#bansContainer').html(`
-                                <div class="empty-state">
-                                    <i class="fas fa-check-circle"></i>
-                                    <p>No hay jugadores baneados</p>
-                                </div>
-                            `);
-                        }
-                        
-                        // Actualizar lista después de 1 segundo
-                        setTimeout(updateBans, 1000);
-                    });
-                } else {
-                    addConsoleMessage('error', `Error al desbanear ${ip}: ${response.error || 'Error desconocido'}`);
-                    // Intentar actualizar de todas formas
-                    setTimeout(updateBans, 1500);
-                }
-            },
-            error: function(xhr) {
-                try {
-                    const errorData = JSON.parse(xhr.responseText);
-                    addConsoleMessage('error', `Error al desbanear (HTTP ${xhr.status}): ${errorData.error || 'Error desconocido'}`);
-                } catch(e) {
-                    addConsoleMessage('error', `Error de conexión: HTTP ${xhr.status}`);
-                }
-                // Actualizar lista después de error
-                setTimeout(updateBans, 1500);
-                console.error('Error details:', xhr);
-            }
+            selectedUnbanIp = banIp;
+            $('#unbanPlayerInfo').text(`Jugador: ${banName} (${banIp})`);
+            showModal('unbanModal');
         });
     }
     
@@ -432,12 +408,11 @@ $(document).ready(function () {
             success: function(response) {
                 if (response.success) {
                     addConsoleMessage('success', `IP ${ip} desbaneada correctamente`);
-                    $(`#bansContainer .ban-item[data-ban-ip="${ip}"]`).fadeOut(300, function() {
-                        $(this).remove();
-                        updateBans();
-                    });
+                    hideModal('unbanModal');
+                    updateBans();
                 } else {
                     addConsoleMessage('error', `Error al desbanear ${ip}: ${response.error || 'Error desconocido'}`);
+                    updateBans();
                 }
             },
             error: function(xhr) {
@@ -448,6 +423,7 @@ $(document).ready(function () {
                     addConsoleMessage('error', `Error de conexión: HTTP ${xhr.status}`);
                 }
                 console.error('Error details:', xhr);
+                updateBans();
             }
         });
     }
@@ -529,6 +505,12 @@ $(document).ready(function () {
                 console.error('Error details:', xhr);
             }
         });
+    });
+
+    $('#unbanConfirmBtn').on('click', function() {
+        if (selectedUnbanIp) {
+            unbanIp(selectedUnbanIp);
+        }
     });
     
     // ============= SERVER INFO UPDATE =============
