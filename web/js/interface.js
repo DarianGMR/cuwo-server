@@ -210,46 +210,81 @@ $(document).ready(function () {
                     return;
                 }
                 
+                const bansContainer = $('#bansContainer');
+                
                 if (data.bans.length === 0) {
-                    $('#bansContainer').html(`
-                        <div class="empty-state">
-                            <i class="fas fa-check-circle"></i>
-                            <p>No hay jugadores baneados</p>
-                        </div>
-                    `);
-                } else {
-                    $('#bansContainer').html('');
-                    
-                    data.bans.forEach(ban => {
-                        const banItem = `
-                            <div class="ban-item" data-ban-ip="${ban.ip}">
-                                <div class="ban-avatar">
-                                    <i class="fas fa-ban"></i>
-                                </div>
-                                <div class="ban-info">
-                                    <div class="ban-name">${ban.name || 'Desconocido'}</div>
-                                    <div class="ban-details-row">
-                                        <div class="ban-detail-item">
-                                            <span class="ban-detail-label">IP Baneada</span>
-                                            <span class="ban-detail-value">${ban.ip}</span>
-                                        </div>
-                                        <div class="ban-detail-item">
-                                            <span class="ban-detail-label">Razón</span>
-                                            <span class="ban-detail-value">${ban.reason || 'Sin razón'}</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="ban-actions">
-                                    <button class="btn-action btn-unban" data-ban-ip="${ban.ip}" data-action="unban">
-                                        <i class="fas fa-lock-open"></i> Desbanear
-                                    </button>
-                                </div>
+                    // Solo mostrar empty-state si hay items actualmente
+                    if (bansContainer.find('.ban-item').length > 0) {
+                        bansContainer.html(`
+                            <div class="empty-state">
+                                <i class="fas fa-check-circle"></i>
+                                <p>No hay jugadores baneados</p>
                             </div>
-                        `;
-                        
-                        $('#bansContainer').append(banItem);
+                        `);
+                    }
+                } else {
+                    // Remover empty-state si existe
+                    bansContainer.find('.empty-state').remove();
+                    
+                    // Crear set de IPs actuales en el servidor
+                    const serverIps = new Set(data.bans.map(b => b.ip));
+                    
+                    // Remover bans que ya no existen
+                    bansContainer.find('.ban-item').each(function() {
+                        const ip = $(this).data('ban-ip');
+                        if (!serverIps.has(ip)) {
+                            $(this).fadeOut(300, function() {
+                                $(this).remove();
+                            });
+                        }
                     });
                     
+                    // Agregar o actualizar bans existentes
+                    data.bans.forEach(ban => {
+                        const existingBan = bansContainer.find(`.ban-item[data-ban-ip="${ban.ip}"]`);
+                        
+                        if (existingBan.length > 0) {
+                            // Actualizar ban existente solo si cambió algo
+                            const currentName = existingBan.find('.ban-name').text();
+                            const currentReason = existingBan.find('.ban-detail-value:last').text();
+                            
+                            if (currentName !== (ban.name || 'Desconocido') || currentReason !== (ban.reason || 'Sin razón')) {
+                                existingBan.find('.ban-name').text(ban.name || 'Desconocido');
+                                existingBan.find('.ban-detail-value:last').text(ban.reason || 'Sin razón');
+                            }
+                        } else {
+                            // Agregar nuevo ban sin animación
+                            const banItem = `
+                                <div class="ban-item" data-ban-ip="${ban.ip}">
+                                    <div class="ban-avatar">
+                                        <i class="fas fa-ban"></i>
+                                    </div>
+                                    <div class="ban-info">
+                                        <div class="ban-name">${ban.name || 'Desconocido'}</div>
+                                        <div class="ban-details-row">
+                                            <div class="ban-detail-item">
+                                                <span class="ban-detail-label">IP Baneada</span>
+                                                <span class="ban-detail-value">${ban.ip}</span>
+                                            </div>
+                                            <div class="ban-detail-item">
+                                                <span class="ban-detail-label">Razón</span>
+                                                <span class="ban-detail-value">${ban.reason || 'Sin razón'}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="ban-actions">
+                                        <button class="btn-action btn-unban" data-ban-ip="${ban.ip}" data-action="unban">
+                                            <i class="fas fa-lock-open"></i> Desbanear
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                            
+                            bansContainer.append(banItem);
+                        }
+                    });
+                    
+                    // Reattach handlers a los nuevos items
                     attachBanActionHandlers();
                 }
                 
