@@ -126,11 +126,11 @@ $(document).ready(function () {
                                     $value.text(player.ip);
                                 } else if (labelText.includes('salud')) {
                                     $value.text(player.hp + ' HP');
-                                } else if (labelText.includes('especialización')) {
+                                } else if (labelText.includes('especialidad')) {
                                     $value.text(spec);
                                 } else if (labelText.includes('posición')) {
                                     $value.text(`X:${player.x || 0}`);
-                                } else if (labelText.includes('tiempo')) {
+                                } else if (labelText.includes('tiempo de juego')) {
                                     $value.text(playtimeStr);
                                 }
                             });
@@ -152,7 +152,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">${className}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">Especialización</span>
+                                                <span class="player-detail-label">especialidad</span>
                                                 <span class="player-detail-value">${spec}</span>
                                             </div>
                                             <div class="player-detail-item">
@@ -164,7 +164,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">X:${player.x || 0}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">Tiempo</span>
+                                                <span class="player-detail-label">Tiempo de juego</span>
                                                 <span class="player-detail-value">${playtimeStr}</span>
                                             </div>
                                         </div>
