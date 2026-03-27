@@ -13,16 +13,25 @@ import time
 import logging
 import sys
 import traceback
+import io
+from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-from cuwo.script import ServerScript, ConnectionScript
+from cuwo.script import ServerScript, ConnectionScript, ScriptInterface
+from contextlib import redirect_stdout, redirect_stderr
 
 SITE_PATH = 'web'
 PLAYTIME_DATA_NAME = 'web_playtimes'
+MAX_LOG_LINES = 500
+LOG_FILE = 'logs/console.log'
+SESSION_MARKER = "=" * 80
 
-# Configurar logging
+# Crear carpeta de logs si no existe
+os.makedirs('logs', exist_ok=True)
+
+# Configurar logging global
 logging.basicConfig(
     level=logging.DEBUG,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
+    format='%(message)s',
     handlers=[
         logging.FileHandler('logs/web.log'),
         logging.StreamHandler(sys.stdout)
@@ -32,13 +41,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class WebLogCapture(logging.StreamHandler):
+    """Capturar todos los logs incluyendo print()"""
+    def __init__(self, web_server):
+        super().__init__()
+        self.web_server = web_server
+    
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.web_server.add_log_line(msg)
+        except Exception:
+            self.handleError(record)
+
+
 class WebConnectionScript(ConnectionScript):
     """Script para trackear tiempo de conexión de jugadores"""
     
     def on_join(self, event):
         """Se ejecuta cuando un jugador entra al servidor"""
         self.connection.web_join_time = time.time()
-        logger.info(f"Registrado join_time para {self.connection.name}")
     
     def on_unload(self):
         """Guardar tiempo de juego cuando el jugador se desconecta"""
@@ -57,7 +79,6 @@ class WebConnectionScript(ConnectionScript):
                     playtime_data[player_name] = playtime_seconds
                 
                 self.server.save_data(PLAYTIME_DATA_NAME, playtime_data)
-                logger.info(f"Guardado tiempo de juego para {self.connection.name}: {playtime_data[player_name]} segundos")
         except Exception as e:
             logger.error(f"Error guardando tiempo de juego: {e}\n{traceback.format_exc()}")
 
@@ -95,6 +116,9 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
         elif self.path == '/api/bans':
             self.handle_bans_api()
             return
+        elif self.path == '/api/logs':
+            self.handle_logs_api()
+            return
         super().do_GET()
     
     def do_POST(self):
@@ -114,6 +138,21 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.handle_chat_post(data)
         else:
             self.send_error(404, "Not Found")
+    
+    def handle_logs_api(self):
+        """Devolver logs de la sesión actual"""
+        logs = self.server.web_server.get_current_session_logs()
+        response_data = {
+            'response': 'logs',
+            'logs': logs
+        }
+        
+        response = json.dumps(response_data)
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', len(response))
+        self.end_headers()
+        self.wfile.write(response.encode('utf-8'))
     
     def handle_players_api(self):
         """Devolver lista de jugadores en JSON"""
@@ -163,11 +202,10 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     players_list.append(player_data)
                     
                 except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"Error procesando jugador: {e}")
                     continue
                     
         except Exception as e:
-            logger.error(f"Error en handle_players_api: {e}\n{traceback.format_exc()}")
+            pass
         
         response_data = {
             'response': 'get_players',
@@ -187,7 +225,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
         server = self.server.web_server.server
         
         try:
-            # Acceder al script de ban correctamente
             ban_script = None
             for item in server.scripts.items.values():
                 if hasattr(item, 'banned_ips'):
@@ -197,7 +234,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
             if ban_script and hasattr(ban_script, 'banned_ips'):
                 bans_list = []
                 for ip, ban_data in ban_script.banned_ips.items():
-                    # Compatibilidad con formato nuevo y antiguo
                     if isinstance(ban_data, dict):
                         bans_list.append({
                             'ip': ip,
@@ -205,7 +241,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                             'reason': ban_data.get('reason', 'Sin razón')
                         })
                     else:
-                        # Formato antiguo (solo razón como string)
                         bans_list.append({
                             'ip': ip,
                             'name': 'Desconocido',
@@ -224,7 +259,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     'count': 0
                 }
         except Exception as e:
-            logger.error(f"Error en handle_bans_api: {e}\n{traceback.format_exc()}")
             response_data = {
                 'response': 'ban_list',
                 'bans': [],
@@ -252,7 +286,6 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                 'uptime': int(time.time() - self.server.web_server.start_time)
             }
         except Exception as e:
-            logger.error(f"Error en handle_server_api: {e}\n{traceback.format_exc()}")
             server_data = {
                 'response': 'server_info',
                 'name': 'Cuwo Server',
@@ -287,7 +320,7 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                 if id(connection) % 10000 == player_id:
                     return connection
         except Exception as e:
-            logger.debug(f"Error en find_player_by_id: {e}")
+            pass
         
         return None
     
@@ -301,7 +334,7 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
             return
         
         request = data.get('request')
-        response_msg = {"response": "Success", "success": False, "error": None}
+        response_msg = {"response": "Success", "success": False, "error": None, "output": ""}
         
         try:
             if request == 'send_message':
@@ -313,20 +346,75 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                     chat_history.append({'id': 0, 'name': 'Server', 'message': formatted_msg})
                     if len(chat_history) > 100:
                         chat_history.pop(0)
-                    logger.info(f"[CHAT] {formatted_msg}")
                     response_msg["success"] = True
                     
             elif request == 'execute_command':
                 command = data.get('command', '').strip()
                 if command:
-                    logger.info(f"[COMANDO] {command}")
+                    parts = command.split()
+                    cmd_name = parts[0].lower()
+                    cmd_args = parts[1:] if len(parts) > 1 else []
+                    
                     try:
-                        server.call_command(None, command.split()[0], command.split()[1:] if len(command.split()) > 1 else [])
-                        response_msg["success"] = True
+                        # Validar que el comando existe
+                        script_interface = ScriptInterface('Web', server, 'admin', 'web')
+                        cmd_obj = script_interface.get_command(cmd_name)
+                        
+                        if cmd_obj is None:
+                            response_msg["success"] = False
+                            response_msg["error"] = f"Comando inválido: '{cmd_name}' no existe"
+                            self.server.web_server.add_log_line(f"> {command}")
+                            self.server.web_server.add_log_line(f"ERROR: Comando inválido: '{cmd_name}' no existe")
+                        else:
+                            # Capturar stdout/stderr
+                            output_buffer = io.StringIO()
+                            error_occurred = False
+                            
+                            try:
+                                with redirect_stdout(output_buffer), redirect_stderr(output_buffer):
+                                    # Ejecutar comando
+                                    result = server.call_command(script_interface, cmd_name, cmd_args)
+                                
+                                # Obtener output capturado
+                                captured_output = output_buffer.getvalue().strip()
+                                
+                                if result is not None:
+                                    response_msg["success"] = True
+                                    response_msg["output"] = str(result)
+                                    self.server.web_server.add_log_line(f"> {command}")
+                                    self.server.web_server.add_log_line(str(result))
+                                elif captured_output:
+                                    response_msg["success"] = True
+                                    response_msg["output"] = captured_output
+                                    self.server.web_server.add_log_line(f"> {command}")
+                                    self.server.web_server.add_log_line(captured_output)
+                                else:
+                                    response_msg["success"] = True
+                                    response_msg["output"] = ""
+                                    self.server.web_server.add_log_line(f"> {command}")
+                                    
+                            except Exception as cmd_error:
+                                error_occurred = True
+                                error_msg = str(cmd_error)
+                                error_trace = traceback.format_exc()
+                                
+                                response_msg["success"] = False
+                                response_msg["error"] = f"Error al ejecutar comando: {error_msg}\n\nTraceback:\n{error_trace}"
+                                
+                                self.server.web_server.add_log_line(f"> {command}")
+                                self.server.web_server.add_log_line(f"ERROR: {error_msg}")
+                                self.server.web_server.add_log_line(f"Traceback completo:\n{error_trace}")
+                        
                     except Exception as e:
-                        logger.error(f"Error ejecutando comando: {e}\n{traceback.format_exc()}")
+                        error_msg = str(e)
+                        error_trace = traceback.format_exc()
+                        
                         response_msg["success"] = False
-                        response_msg["error"] = str(e)
+                        response_msg["error"] = f"Error al ejecutar comando: {error_msg}\n\nTraceback:\n{error_trace}"
+                        
+                        self.server.web_server.add_log_line(f"> {command}")
+                        self.server.web_server.add_log_line(f"ERROR: {error_msg}")
+                        self.server.web_server.add_log_line(f"Traceback completo:\n{error_trace}")
                     
             elif request == 'heal_player':
                 player_id = data.get('player_id')
@@ -339,15 +427,15 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                                 if hasattr(entity, 'damage'):
                                     entity.damage(-1000)
                                     response_msg["success"] = True
-                                    logger.info(f"[HEAL] Jugador {connection.name} (ID: {player_id}) sanado")
-                                    server.send_chat(f"{connection.name} ha sido sanado")
+                                    msg = f"{connection.name} fue sanado"
+                                    self.server.web_server.add_log_line(f"[HEAL] {msg}")
+                                    server.send_chat(msg)
                                 else:
                                     response_msg["error"] = "Entidad sin método damage()"
                             else:
                                 response_msg["error"] = "Conexión sin entidad"
                         except Exception as e:
                             response_msg["error"] = str(e)
-                            logger.error(f"Error curando jugador: {e}\n{traceback.format_exc()}")
                     else:
                         response_msg["error"] = f"Jugador con ID {player_id} no encontrado"
                     
@@ -360,18 +448,15 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                         try:
                             connection.kick(reason)
                             response_msg["success"] = True
-                            logger.info(f"[KICK] Jugador {connection.name} (ID: {player_id}) expulsado. Razón: {reason}")
+                            self.server.web_server.add_log_line(f"[KICK] Jugador {connection.name} expulsado. Razón: {reason}")
                         except Exception as e:
                             response_msg["error"] = str(e)
-                            logger.error(f"Error expulsando jugador: {e}\n{traceback.format_exc()}")
                     else:
                         response_msg["error"] = f"Jugador con ID {player_id} no encontrado"
                     
             elif request == 'ban_player':
                 player_id = data.get('player_id')
                 reason = data.get('reason', 'Sin especificar')
-                
-                logger.info(f"[BAN REQUEST] Player ID: {player_id}, Reason: {reason}")
                 
                 if player_id is not None:
                     connection = self.find_player_by_id(server, player_id)
@@ -380,77 +465,59 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                             player_name = connection.name
                             player_ip = connection.address[0]
                             
-                            logger.info(f"[BAN] Encontrado jugador: {player_name} con IP: {player_ip}")
-                            
-                            # Acceder al script de ban correctamente
                             ban_script = None
                             for item in server.scripts.items.values():
                                 if hasattr(item, 'ban_ip'):
                                     ban_script = item
-                                    logger.info(f"[BAN] Script de ban encontrado")
                                     break
                             
                             if ban_script:
-                                # Banear la IP usando el script de ban (ahora pasando nombre)
-                                logger.info(f"[BAN] Baneando IP {player_ip}")
                                 ban_script.ban_ip(player_ip, reason, player_name)
                                 response_msg["success"] = True
-                                logger.info(f"[BAN] IP {player_ip} del jugador {player_name} baneada. Razón: {reason}")
+                                self.server.web_server.add_log_line(f"[BAN] Jugador {player_name} baneado por IP {player_ip}. Razón: {reason}")
                                 server.send_chat(f"IP {player_ip} ha sido baneada")
                             else:
                                 response_msg["error"] = "Script de ban no encontrado"
-                                logger.error("[BAN] Script de ban no encontrado en los scripts cargados")
                                     
                         except Exception as e:
                             response_msg["error"] = str(e)
-                            logger.error(f"Error baneando jugador: {e}\n{traceback.format_exc()}")
                     else:
                         response_msg["error"] = f"Jugador con ID {player_id} no encontrado"
-                        logger.warning(f"[BAN] Jugador con ID {player_id} no encontrado")
                 else:
                     response_msg["error"] = "ID de jugador no proporcionado"
-                    logger.warning("[BAN] ID de jugador no proporcionado")
 
             elif request == 'unban_ip':
                 ip = data.get('ip')
-                logger.info(f"[UNBAN REQUEST] IP: {ip}")
                 
                 if ip:
                     try:
-                        # Acceder al script de ban
                         ban_script = None
                         for item in server.scripts.items.values():
                             if hasattr(item, 'unban_ip'):
                                 ban_script = item
-                                logger.info(f"[UNBAN] Script de ban encontrado")
                                 break
                         
                         if ban_script:
                             if ban_script.unban_ip(ip):
                                 response_msg["success"] = True
-                                logger.info(f"[UNBAN] IP {ip} desbaneada correctamente")
+                                self.server.web_server.add_log_line(f"[UNBAN] IP {ip} desbaneada")
                                 server.send_chat(f"IP {ip} ha sido desbaneada")
                             else:
                                 response_msg["error"] = f"IP {ip} no encontrada en lista de baneados"
-                                logger.warning(f"[UNBAN] IP {ip} no encontrada")
                         else:
                             response_msg["error"] = "Script de ban no encontrado"
-                            logger.error("[UNBAN] Script de ban no encontrado")
                             
                     except Exception as e:
                         response_msg["error"] = str(e)
-                        logger.error(f"Error desbaneando IP: {e}\n{traceback.format_exc()}")
                 else:
                     response_msg["error"] = "IP no proporcionada"
-                    logger.warning("[UNBAN] IP no proporcionada")
                     
             elif request == 'clear_log':
-                logger.info("[LOG] Log limpiado por admin")
+                self.server.web_server.clear_all_logs()
                 response_msg["success"] = True
                 
         except Exception as e:
-            response_msg["error"] = str(e)
-            logger.error(f"Error procesando comando {request}: {e}\n{traceback.format_exc()}")
+            response_msg["error"] = f"Error procesando comando: {str(e)}\n{traceback.format_exc()}"
         
         response = json.dumps(response_msg)
         self.send_response(200)
@@ -473,6 +540,9 @@ class WebServer(ServerScript):
         """Se ejecuta cuando se carga el script"""
         try:
             self.start_time = time.time()
+            self.session_start_time = datetime.now()
+            self.current_session_logs = []
+            
             config = self.server.config.web
             
             web_port = config.port
@@ -487,12 +557,18 @@ class WebServer(ServerScript):
             
             self._update_init_js(web_port, self.auth_key)
             
+            # Escribir marcador de nueva sesión en archivo
+            self._write_session_marker()
+            
             handler = SiteHTTPRequestHandler
             self.http_server = HTTPServer((web_host, web_port), handler)
             self.http_server.web_server = self
             
+            # Agregar handler para capturar logs
+            web_log_capture = WebLogCapture(self)
+            logger.addHandler(web_log_capture)
+            
             def run_web_server():
-                logger.info(f"Panel web disponible en http://{web_host}:{web_port}")
                 try:
                     self.http_server.serve_forever()
                 except Exception as e:
@@ -507,6 +583,53 @@ class WebServer(ServerScript):
         except Exception as e:
             logger.error(f"Error inicializando servidor web: {e}\n{traceback.format_exc()}")
     
+    def _write_session_marker(self):
+        """Escribir marcador de sesión en archivo"""
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            marker = f"\n{SESSION_MARKER}\nSESIÓN INICIADA: {timestamp}\n{SESSION_MARKER}\n"
+            
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(marker)
+        except Exception as e:
+            logger.error(f"Error escribiendo marcador de sesión: {e}")
+    
+    def add_log_line(self, line):
+        """Agregar línea de log con fecha/hora al archivo y sesión actual"""
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry = f"[{timestamp}] {line}"
+            
+            # Agregar a sesión actual (sin timestamp para mostrar en web)
+            self.current_session_logs.append(line)
+            if len(self.current_session_logs) > MAX_LOG_LINES:
+                self.current_session_logs.pop(0)
+            
+            # Escribir en archivo (con timestamp para persistencia)
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(log_entry + '\n')
+        except Exception as e:
+            logger.error(f"Error escribiendo log: {e}")
+    
+    def get_current_session_logs(self):
+        """Obtener logs solo de la sesión actual"""
+        return list(self.current_session_logs)
+    
+    def clear_current_session_logs(self):
+        """Limpiar logs de sesión actual (pero mantener archivo)"""
+        self.current_session_logs = []
+
+    def clear_all_logs(self):
+        """Limpiar archivo de logs completamente"""
+        try:
+            # Vaciar archivo completamente
+            with open(LOG_FILE, 'w', encoding='utf-8') as f:
+                f.write('')
+            # Limpiar sesión actual también
+            self.current_session_logs = []
+        except Exception as e:
+            logger.error(f"Error limpiando logs: {e}")
+    
     def _update_init_js(self, port, auth_key):
         """Actualizar archivo init.js"""
         try:
@@ -514,7 +637,6 @@ class WebServer(ServerScript):
             content = f'var server_port = "{port}";\nvar auth_key = "{auth_key}";\n'
             with open(js_path, 'w') as f:
                 f.write(content)
-            logger.info("Archivo init.js actualizado")
         except Exception as e:
             logger.warning(f"No se pudo actualizar init.js: {e}\n{traceback.format_exc()}")
     
@@ -532,7 +654,6 @@ class WebServer(ServerScript):
         try:
             if hasattr(self, 'http_server'):
                 self.http_server.shutdown()
-                logger.info("Servidor web detenido")
         except Exception as e:
             logger.error(f"Error deteniendo servidor web: {e}\n{traceback.format_exc()}")
 
