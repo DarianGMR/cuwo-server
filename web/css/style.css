@@ -495,10 +495,15 @@ html, body {
 
 .console-line {
     font-size: 13px;
-    color: #0f0;
+    color: #ffffff;
     text-shadow: 0 0 5px rgba(15, 255, 0, 0.3);
     word-break: break-word;
 }
+
+.console-line-error {
+    color: #ff8787; 
+}
+
 
 .console-success {
     color: var(--success);
