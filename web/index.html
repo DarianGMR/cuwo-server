@@ -238,6 +238,24 @@
         </div>
     </div>
 
+        <!-- Modal de Limpiar Log -->
+    <div id="clearLogModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Limpiar Log</h3>
+                <button class="modal-close" data-dismiss="clearLogModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>¿Estás seguro de que deseas limpiar el log completamente?</p>
+                <p style="margin-top: 15px; color: var(--text-secondary); font-size: 12px;">Esta acción eliminará todo el contenido del log de la consola.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" data-dismiss="clearLogModal">Cancelar</button>
+                <button class="btn-confirm" id="clearLogConfirmBtn">Aceptar</button>
+            </div>
+        </div>
+    </div>
+
     
     <script src="js/init.js"></script>
     <script src="js/interface.js"></script>
