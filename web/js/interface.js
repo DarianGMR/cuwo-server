@@ -136,11 +136,11 @@ $(document).ready(function () {
                                     $value.text(player.ip);
                                 } else if (labelText.includes('salud')) {
                                     $value.text(player.hp + ' HP');
-                                } else if (labelText.includes('especialización')) {
+                                } else if (labelText.includes('especialidad')) {
                                     $value.text(spec);
                                 } else if (labelText.includes('posición')) {
                                     $value.text(`X:${player.x || 0}`);
-                                } else if (labelText.includes('tiempo')) {
+                                } else if (labelText.includes('tiempo de juego')) {
                                     $value.text(playtimeStr);
                                 }
                             });
@@ -162,7 +162,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">${className}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">Especialización</span>
+                                                <span class="player-detail-label">Especialidad</span>
                                                 <span class="player-detail-value">${spec}</span>
                                             </div>
                                             <div class="player-detail-item">
@@ -174,7 +174,7 @@ $(document).ready(function () {
                                                 <span class="player-detail-value">X:${player.x || 0}</span>
                                             </div>
                                             <div class="player-detail-item">
-                                                <span class="player-detail-label">Tiempo</span>
+                                                <span class="player-detail-label">Tiempo de juego</span>
                                                 <span class="player-detail-value">${playtimeStr}</span>
                                             </div>
                                         </div>
@@ -535,6 +535,78 @@ $(document).ready(function () {
     }
     
     // ============= CONSOLE =============
+    
+    function updateConsoleLogs() {
+        $.ajax({
+            url: '/api/logs',
+            type: 'GET',
+            dataType: 'json',
+            success: function(data) {
+                if (!data || !Array.isArray(data.logs)) {
+                    return;
+                }
+                
+                // Obtener logs ya mostrados
+                const currentLogLines = $('#consoleOutput .console-line:not(:contains("Servidor web conectado"))').length;
+                const totalLogs = data.logs.length;
+                
+                // Si hay más logs en el servidor, agregar solo los nuevos
+                if (totalLogs > currentLogLines) {
+                    const newLogs = data.logs.slice(currentLogLines);
+                    newLogs.forEach(logLine => {
+                        const line = `<div class="console-line"><span class="console-success">✓</span> ${escapeHtml(logLine)}</div>`;
+                        $('#consoleOutput').append(line);
+                    });
+                    $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
+                }
+            },
+            error: function() {
+                // Silenciar errores
+            }
+        });
+    }
+    
+    function loadInitialConsoleLogs() {
+        $.ajax({
+            url: '/api/logs',
+            type: 'GET',
+            dataType: 'json',
+            success: function(data) {
+                if (!data || !Array.isArray(data.logs)) {
+                    return;
+                }
+                
+                // Si hay logs, mostrarlos
+                if (data.logs.length > 0) {
+                    // Limpiar el mensaje inicial si ya hay logs
+                    const existingLogs = $('#consoleOutput .console-line').length;
+                    if (existingLogs <= 1) {
+                        // Solo hay "Servidor web conectado", reemplazar con logs reales
+                        data.logs.forEach(logLine => {
+                            const line = `<div class="console-line"><span class="console-success">✓</span> ${escapeHtml(logLine)}</div>`;
+                            $('#consoleOutput').append(line);
+                        });
+                        $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
+                    }
+                }
+            },
+            error: function() {
+                // Silenciar errores
+            }
+        });
+    }
+    
+    function escapeHtml(text) {
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return text.replace(/[&<>"']/g, m => map[m]);
+    }
+    
     function addConsoleMessage(type, text) {
         let span = '<span class="console-success">✓</span>';
         if (type === 'error') {
@@ -543,7 +615,7 @@ $(document).ready(function () {
             span = '<span class="console-warning">⚠</span>';
         }
         
-        const line = `<div class="console-line">${span} ${text}</div>`;
+        const line = `<div class="console-line">${span} ${escapeHtml(text)}</div>`;
         $('#consoleOutput').append(line);
         $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
     }
@@ -565,15 +637,23 @@ $(document).ready(function () {
                     }),
                     success: function(response) {
                         if (response.success) {
-                            addConsoleMessage('success', 'Comando ejecutado correctamente');
+                            if (response.output && response.output.trim()) {
+                                addConsoleMessage('success', response.output);
+                            }
                         } else {
-                            addConsoleMessage('error', `Error ejecutando comando: ${response.error || 'Error desconocido'}`);
+                            if (response.error) {
+                                addConsoleMessage('error', response.error);
+                            } else {
+                                addConsoleMessage('error', 'Error desconocido ejecutando comando');
+                            }
                         }
+                        // Actualizar logs después de ejecutar comando
+                        setTimeout(updateConsoleLogs, 500);
                     },
                     error: function(xhr) {
                         try {
                             const errorData = JSON.parse(xhr.responseText);
-                            addConsoleMessage('error', `Error de ejecución: ${errorData.error || 'Error desconocido'}`);
+                            addConsoleMessage('error', `Error: ${errorData.error || 'Error desconocido'}`);
                         } catch(e) {
                             addConsoleMessage('error', `Error de conexión: HTTP ${xhr.status}`);
                         }
@@ -587,9 +667,7 @@ $(document).ready(function () {
     });
     
     $('#clearLogBtn').on('click', function() {
-        if (confirm('¿Estás seguro de que deseas limpiar el log?')) {
-            $('#consoleOutput').html('<div class="console-line"><span class="console-success">✓</span> Log limpiado</div>');
-            
+        if (confirm('¿Estás seguro de que deseas limpiar el log completamente?')) {
             $.ajax({
                 url: '/api/command',
                 type: 'POST',
@@ -598,8 +676,8 @@ $(document).ready(function () {
                     request: 'clear_log',
                     key: auth_key
                 }),
-                error: function() {
-                    addConsoleMessage('error', 'Error al limpiar el log');
+                success: function() {
+                    $('#consoleOutput').html('<div class="console-line"><span class="console-success">✓</span> Log limpiado completamente</div>');
                 }
             });
         }
@@ -658,11 +736,14 @@ $(document).ready(function () {
     updatePlayers();
     updateServerInfo();
     updateBans();
+    updateConsoleLogs();
+    loadInitialConsoleLogs();
     
     updateInterval = setInterval(() => {
         updatePlayers();
         updateServerInfo();
         updateBans();
+        updateConsoleLogs();
     }, 5000);
     
     $(window).on('unload', function() {
