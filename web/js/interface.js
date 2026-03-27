@@ -638,18 +638,28 @@ $(document).ready(function () {
     }
     
     function addConsoleMessage(type, text) {
-        let span = '<span class="console-success">✓</span>';
+        let symbolHTML = '<span class="console-success">✓</span>';
         let lineClass = '';
         
         if (type === 'error') {
-            span = '<span class="console-error">✗</span>';
+            symbolHTML = '<span class="console-error">✗</span>';
             lineClass = 'console-line-error-command';
         } else if (type === 'warning') {
-            span = '<span class="console-warning">⚠</span>';
+            symbolHTML = '<span class="console-warning">⚠</span>';
         }
         
-        const line = `<div class="console-line ${lineClass}">${span} ${escapeHtml(text)}</div>`;
-        $('#consoleOutput').append(line);
+        // Detectar si es output de help o tiene múltiples líneas con formato
+        if (text.includes('\n') && (text.includes('COMANDOS') || text.includes('==='))) {
+            // Usar pre para preservar saltos de línea y espacios
+            const line = `<div class="console-line ${lineClass}">${symbolHTML}<pre class="console-pre">${escapeHtml(text)}</pre></div>`;
+            $('#consoleOutput').append(line);
+        } else {
+            // Formato normal
+            const contentClass = lineClass ? 'console-error' : 'console-success';
+            const line = `<div class="console-line ${lineClass}">${symbolHTML} ${escapeHtml(text)}</div>`;
+            $('#consoleOutput').append(line);
+        }
+        
         $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
     }
     
