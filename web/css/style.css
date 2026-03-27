@@ -504,6 +504,13 @@ html, body {
     color: #ff8787; 
 }
 
+.console-line-error-command {
+    color: #ffffff;
+}
+
+.console-line-error-command .console-error {
+    color: #ff8787;
+}
 
 .console-success {
     color: var(--success);
