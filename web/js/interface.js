@@ -569,8 +569,18 @@ $(document).ready(function () {
                         let symbolClass = isError ? 'console-error' : 'console-success';
                         let lineClass = isError ? 'console-line-error-command' : '';
                         
-                        const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span> ${escapeHtml(displayLine)}</div>`;
-                        $('#consoleOutput').append(line);
+                        // Detectar si tiene múltiples líneas
+                        const hasMultipleLines = displayLine.includes('\n');
+                        
+                        if (hasMultipleLines) {
+                            // Usar pre para preservar formato
+                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span><pre class="console-pre">${escapeHtml(displayLine)}</pre></div>`;
+                            $('#consoleOutput').append(line);
+                        } else {
+                            // Formato normal
+                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span> ${escapeHtml(displayLine)}</div>`;
+                            $('#consoleOutput').append(line);
+                        }
                     });
                     $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
                 }
@@ -613,8 +623,18 @@ $(document).ready(function () {
                             let symbolClass = isError ? 'console-error' : 'console-success';
                             let lineClass = isError ? 'console-line-error-command' : '';
                             
-                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span> ${escapeHtml(displayLine)}</div>`;
-                            $('#consoleOutput').append(line);
+                            // Detectar si tiene múltiples líneas
+                            const hasMultipleLines = displayLine.includes('\n');
+                            
+                            if (hasMultipleLines) {
+                                // Usar pre para preservar formato
+                                const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span><pre class="console-pre">${escapeHtml(displayLine)}</pre></div>`;
+                                $('#consoleOutput').append(line);
+                            } else {
+                                // Formato normal
+                                const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${isError ? '✗' : '✓'}</span> ${escapeHtml(displayLine)}</div>`;
+                                $('#consoleOutput').append(line);
+                            }
                         });
                         $('#consoleOutput').scrollTop($('#consoleOutput')[0].scrollHeight);
                     }
@@ -648,14 +668,15 @@ $(document).ready(function () {
             symbolHTML = '<span class="console-warning">⚠</span>';
         }
         
-        // Detectar si es output de help o tiene múltiples líneas con formato
-        if (text.includes('\n') && (text.includes('COMANDOS') || text.includes('==='))) {
+        // Detectar si necesita pre (múltiples líneas o contiene espacios alineados)
+        const needsPre = text.includes('\n');
+        
+        if (needsPre) {
             // Usar pre para preservar saltos de línea y espacios
             const line = `<div class="console-line ${lineClass}">${symbolHTML}<pre class="console-pre">${escapeHtml(text)}</pre></div>`;
             $('#consoleOutput').append(line);
         } else {
-            // Formato normal
-            const contentClass = lineClass ? 'console-error' : 'console-success';
+            // Formato normal para líneas simples
             const line = `<div class="console-line ${lineClass}">${symbolHTML} ${escapeHtml(text)}</div>`;
             $('#consoleOutput').append(line);
         }
