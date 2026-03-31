@@ -5,8 +5,8 @@ El comando /ban banea la IP del jugador
 
 from cuwo.script import ServerScript, ConnectionScript, command, admin
 
-SELF_BANNED_IP = 'Tu IP está baneada: {reason}'
-IP_BANNED = 'IP {ip} ha sido baneada (Razón: {reason}). Jugador {name} desconectado.'
+SELF_BANNED_IP = 'Tu IP esta baneada (Razon: {reason}).'
+IP_BANNED = 'El jugador {name} ha sido baneado (Razon: {reason}).'
 DEFAULT_REASON = 'Sin motivo especificado'
 
 IP_BAN_DATA = 'banlist_ips'
