@@ -224,7 +224,7 @@ class CubeWorldConnection(asyncio.Protocol):
         self.server.connections.discard(self)
         if self.has_joined:
             del self.server.players[self]
-            print('Player %s left' % self.name)
+            print('Jugador %s se ha desconectado' % self.name)
         if self.entity is not None:
             self.entity.destroy()
         if self.entity_id is not None:
