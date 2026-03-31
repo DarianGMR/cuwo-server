@@ -936,12 +936,19 @@ $(document).ready(function () {
         updateServerInfo();
         updateBans();
         updateConsoleLogs();
-        updateChat();
     }, 5000);
+
+        // INTERVALO SEPARADO PARA CHAT MÁS RÁPIDO: 1000ms
+    const chatInterval = setInterval(() => {
+        updateChat();
+    }, 1000);
     
     $(window).on('unload', function() {
         if (updateInterval) {
             clearInterval(updateInterval);
+        }
+        if (chatInterval) {
+            clearInterval(chatInterval);
         }
     });
 });
