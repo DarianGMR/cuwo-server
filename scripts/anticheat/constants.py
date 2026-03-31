@@ -25,7 +25,7 @@ from cuwo.constants import (WARRIOR_CLASS, RANGER_CLASS,
                             MAGE_CLASS, ROGUE_CLASS)
 from cuwo.vector import qvec3, ivec3, vec3
 
-CUWO_ANTICHEAT = "CubanPlay anti-cheat"
+CUWO_ANTICHEAT = "cuwo anti-cheat"
 
 LOG_LEVEL_VERBOSE = 2
 LOG_LEVEL_DEFAULT = 1
