@@ -264,7 +264,7 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
         self.wfile.write(response.encode('utf-8'))
     
     def handle_bans_api(self):
-        """Devolver lista de IPs baneadas con nombre y razon"""
+        """Devolver lista de IPs baneadas con nombre, razon y quien banea"""
         server = self.server.web_server.server
         
         try:
@@ -281,13 +281,15 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                         bans_list.append({
                             'ip': ip,
                             'name': ban_data.get('name', 'Desconocido'),
-                            'reason': ban_data.get('reason', 'Sin razon')
+                            'reason': ban_data.get('reason', 'Sin razon'),
+                            'banned_by': ban_data.get('banned_by', 'administrador')
                         })
                     else:
                         bans_list.append({
                             'ip': ip,
                             'name': 'Desconocido',
-                            'reason': ban_data or 'Sin razon'
+                            'reason': ban_data or 'Sin razon',
+                            'banned_by': 'administrador'
                         })
                 
                 response_data = {
@@ -559,10 +561,10 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                                     break
                             
                             if ban_script:
-                                ban_script.ban_ip(player_ip, reason, player_name)
+                                # Pasar ban_by='administrador' para marcar como admin
+                                ban_script.ban_ip(player_ip, reason, player_name, ban_by='administrador')
                                 response_msg["success"] = True
                                 self.server.web_server.add_log_line_with_symbol(f"[BAN] Jugador {player_name} baneado por IP {player_ip}. Razon: {reason}", "success")
-                                server.send_chat(f"IP {player_ip} ha sido baneada")
                             else:
                                 response_msg["error"] = "Script de ban no encontrado"
                                     
@@ -684,14 +686,14 @@ class WebServer(ServerScript):
             logger.error(f"Error inicializando servidor web: {e}\n{traceback.format_exc()}")
     
     def _patch_chat_system(self):
-        """Reemplazar print() con una version que guarde en chat.log"""
+        """Reemplazar print() con una version que guarde en chat.log y consola.log"""
         import builtins
         
         original_print = builtins.print
         web_server = self
         
         def patched_print(*args, **kwargs):
-            """Print parcheado que captura mensajes de chat"""
+            """Print parcheado que captura mensajes de chat y consola"""
             # Llamar al print original
             original_print(*args, **kwargs)
             
@@ -700,19 +702,22 @@ class WebServer(ServerScript):
                 message_str = str(args[0])
                 
                 # Detectar si es un mensaje de chat con formato "nombre: mensaje"
+                # PERO EXCLUIR mensajes del anticheat y logs del sistema
                 if ':' in message_str and len(message_str) > 3:
-                    parts = message_str.split(':', 1)
-                    if len(parts) == 2:
-                        player_name = parts[0].strip()
-                        chat_message = parts[1].strip()
-                        
-                        # Validar que el nombre solo contiene caracteres validos (no es un log del sistema)
-                        if player_name and all(c.isalnum() or c in ' -_' for c in player_name):
-                            if chat_message and not any(x in player_name for x in ['[', ']', '(', ')']):
-                                try:
-                                    web_server.add_chat_message(player_name, chat_message)
-                                except Exception as e:
-                                    original_print(f"Error guardando chat: {e}")
+                    # Excluir mensajes que contienen caracteres especiales del sistema
+                    if not any(x in message_str for x in ['[', ']', '(', ')', 'anticheat', 'Jugador', 'cuwo', 'Script', 'Se recibieron', 'cambio de nombre']):
+                        parts = message_str.split(':', 1)
+                        if len(parts) == 2:
+                            player_name = parts[0].strip()
+                            chat_message = parts[1].strip()
+                            
+                            # Validar que el nombre solo contiene caracteres validos (no es un log del sistema)
+                            if player_name and all(c.isalnum() or c in ' -_' for c in player_name):
+                                if chat_message and not any(x in player_name for x in ['[', ']', '(', ')', 'anticheat', 'Jugador']):
+                                    try:
+                                        web_server.add_chat_message(player_name, chat_message)
+                                    except Exception as e:
+                                        original_print(f"Error guardando chat: {e}")
         
         builtins.print = patched_print
     
