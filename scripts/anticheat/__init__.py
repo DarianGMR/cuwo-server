@@ -377,9 +377,11 @@ class AntiCheatConnection(ConnectionScript):
             self.log("Error en muerte: {}".format(str(e)), LOG_LEVEL_VERBOSE)
 
     def log(self, message, loglevel=LOG_LEVEL_DEFAULT):
-        """Registra un mensaje de antitrampa"""
+        """Registra un mensaje de antitrampa en consola y web"""
         if self.log_level >= loglevel:
-            print(CUWO_ANTICHEAT + " - " + message)
+            # Mostrar en consola cuwo y capturar en web
+            full_message = CUWO_ANTICHEAT + " - " + message
+            print(full_message)
         if self.irc_log_level >= loglevel:
             try:
                 self.server.scripts.irc.send(CUWO_ANTICHEAT + " - " + message)
@@ -388,7 +390,6 @@ class AntiCheatConnection(ConnectionScript):
 
     def disable_irc_logging(self):
         """Desactiva registro en IRC si no esta disponible"""
-        print("{} - irc no encontrado, registro desactivado".format(CUWO_ANTICHEAT))
         self.irc_log_level = 0
         self.server.config.anticheat.irc_log_level = 0
 
@@ -396,14 +397,18 @@ class AntiCheatConnection(ConnectionScript):
         """Banea a un jugador tramposero por IP"""
         try:
             connection = self.connection
-            self.log(self.log_message.format(
-                playername=connection.name,
-                ip=connection.address[0],
-                reason=reason))
+            
+            # Mensaje para consola del servidor (cuwo y web)
+            anticheat_msg = f"{CUWO_ANTICHEAT} - El jugador {connection.name}({connection.address[0]}) fue baneado (Razon: {reason})"
+            print(anticheat_msg)
+            
+            # Mensaje ÚNICO para el jugador baneado
+            disconnect_msg = f"anticheat: has sido baneado (Razon: {reason})"
+            connection.send_chat(disconnect_msg)
 
-            connection.send_chat(self.disconnect_message.format(
-                name=CUWO_ANTICHEAT,
-                reason=reason))
+            # Mensaje ÚNICO en el servidor para todos los jugadores
+            broadcast_msg = f"anticheat: El jugador {connection.name} a sido baneado (Razon: {reason})"
+            self.server.send_chat(broadcast_msg)
 
             # Usar el sistema de bans por IP
             try:
@@ -411,17 +416,14 @@ class AntiCheatConnection(ConnectionScript):
                 ip = connection.address[0]
                 player_name = connection.name if connection.name else "Desconocido"
                 
-                ban_script.ban_ip(ip, reason, player_name)
-                self.log('Jugador {}({}) baneado por: {}'.format(
-                    player_name, ip, reason), LOG_LEVEL_DEFAULT)
+                # Banear marca como 'anticheat'
+                ban_script.ban_ip(ip, reason, player_name, ban_by='anticheat')
             except (KeyError, AttributeError) as e:
-                self.log('Script de ban no disponible: {}'.format(str(e)), LOG_LEVEL_DEFAULT)
                 connection.disconnect()
                 return
 
             connection.disconnect()
         except Exception as e:
-            self.log("Error al banear: {}".format(str(e)), LOG_LEVEL_VERBOSE)
             try:
                 connection.disconnect()
             except:
