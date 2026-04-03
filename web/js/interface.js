@@ -569,17 +569,17 @@ $(document).ready(function () {
                         let isError = false;
                         let displayLine = logLine;
                         
-                        if (logLine.startsWith('[ERROR]')) {
+                        if (logLine.startsWith('✗')) {
                             isError = true;
                             displayLine = logLine.substring(7).trim();
-                        } else if (logLine.startsWith('[OK]')) {
+                        } else if (logLine.startsWith('✓')) {
                             displayLine = logLine.substring(4).trim();
                         }
                         
                         // Aplicar estilos segun el simbolo
                         let symbolClass = isError ? 'console-error' : 'console-success';
                         let lineClass = isError ? 'console-line-error-command' : '';
-                        let symbol = isError ? '[ERROR]' : '[OK]';
+                        let symbol = isError ? '✗' : '✓';
                         
                         // Detectar si tiene multiples lineas
                         const hasMultipleLines = displayLine.includes('\n');
@@ -625,17 +625,17 @@ $(document).ready(function () {
                             let isError = false;
                             let displayLine = logLine;
                             
-                            if (logLine.startsWith('[ERROR]')) {
+                            if (logLine.startsWith('✗')) {
                                 isError = true;
                                 displayLine = logLine.substring(7).trim();
-                            } else if (logLine.startsWith('[OK]')) {
+                            } else if (logLine.startsWith('✓')) {
                                 displayLine = logLine.substring(4).trim();
                             }
                             
                             // Aplicar estilos segun el simbolo
                             let symbolClass = isError ? 'console-error' : 'console-success';
                             let lineClass = isError ? 'console-line-error-command' : '';
-                            let symbol = isError ? '[ERROR]' : '[OK]';
+                            let symbol = isError ? '✗' : '✓';
                             
                             // Detectar si tiene multiples lineas
                             const hasMultipleLines = displayLine.includes('\n');
@@ -672,11 +672,11 @@ $(document).ready(function () {
     }
     
     function addConsoleMessage(type, text) {
-        let symbolHTML = '<span class="console-success">[OK]</span>';
+        let symbolHTML = '<span class="console-success">✓</span>';
         let lineClass = '';
         
         if (type === 'error') {
-            symbolHTML = '<span class="console-error">[ERROR]</span>';
+            symbolHTML = '<span class="console-error">✗</span>';
             lineClass = 'console-line-error-command';
         } else if (type === 'warning') {
             symbolHTML = '<span class="console-warning">[WARN]</span>';
@@ -765,7 +765,7 @@ $(document).ready(function () {
             }),
             success: function() {
                 hideModal('clearLogModal');
-                $('#consoleOutput').html('<div class="console-line"><span class="console-success">[OK]</span> Log limpiado</div>');
+                $('#consoleOutput').html('<div class="console-line"><span class="console-success">✓</span> Log limpiado</div>');
             }
         });
     });
