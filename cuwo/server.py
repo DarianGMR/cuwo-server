@@ -15,1015 +15,942 @@
 # You should have received a copy of the GNU General Public License
 # along with cuwo.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Script Antitrampa para Cuwo"""
-
-from cuwo.constants import (RANGER_CLASS, ATTACKING_FLAG, STEALTH_FLAG,
-                            GLIDER_FLAG)
-from cuwo.script import ServerScript, ConnectionScript
-from cuwo.common import get_power, get_item_name, is_bit_set
-from cuwo.packet import ServerUpdate, PickupAction
-from .constants import (LOG_LEVEL_VERBOSE, LOG_LEVEL_DEFAULT, CUWO_ANTICHEAT,
-                        LEGAL_RECIPE_ITEMS, LEGAL_ITEMS, LEGAL_CLASSES,
-                        LEGAL_ITEMSLOTS, TWOHANDED_WEAPONS, CLASS_WEAPONS,
-                        CLASS_ARMOR, ARMOR_IDS, ABILITIES, APPEARANCES)
+from cuwo import packet as packets
+from cuwo.types import MultikeyDict, AttributeSet
+from cuwo import constants
+from cuwo.common import (get_clock_string, parse_clock, parse_command,
+                         get_chunk, filter_string, iterate_packet_list)
+from cuwo.script import ScriptManager
+from cuwo.config import ConfigObject
 from cuwo import tgen_wrap as entitydata
+from cuwo import static
+from cuwo.loop import LoopingCall
+from cuwo import world
+from cuwo.vector import vec3
+import faulthandler
 
-import re
-import math
+import os
+import sys
+import pprint
 import traceback
+import asyncio
+import signal
+import socket
+import importlib
+
+# initialize packet instances for sending
+join_packet = packets.JoinPacket()
+seed_packet = packets.SeedData()
+chat_packet = packets.ServerChatMessage()
+entity_packet = packets.EntityUpdate()
+update_finished_packet = packets.UpdateFinished()
+time_packet = packets.CurrentTime()
+mismatch_packet = packets.ServerMismatch()
+server_full_packet = packets.ServerFull()
+extra_server_update = packets.ServerUpdate()
 
 
-def is_similar(float1, float2, tolerance=0.1):
-    """Verifica si dos numeros flotantes son similares dentro de un margen"""
-    return float1 > float2 - tolerance and float1 < float2 + tolerance
+class Entity(world.Entity):
+    connection = None
+    full_update = True
+
+    def init(self, *args, **kw):
+        self.close_players = {}
+        super().init(*args, **kw)
+
+    def kill(self):
+        self.damage(self.hp + 100.0)
+
+    def unlink(self, *args, **kw):
+        super().unlink(*args, **kw)
+        self.close_players = None
+
+    def damage(self, damage=0, stun_duration=0):
+        packet = packets.HitPacket()
+        packet.entity_id = self.entity_id
+        packet.target_id = self.entity_id
+        packet.hit_type = packets.HIT_NORMAL
+        packet.damage = damage
+        packet.critical = 1
+        packet.stun_duration = stun_duration
+        packet.something8 = 0
+        packet.pos = self.pos
+        packet.hit_dir = vec3()
+        packet.skill_hit = 0
+        packet.show_light = 0
+        self.world.server.update_packet.player_hits.append(packet)
+        if self.hp <= 0:
+            return
+        self.hp -= damage
+        if self.connection and self.hp <= 0:
+            self.connection.scripts.call('on_die', killer=None)
 
 
-def is_valid_float(v):
-    """Valida que un numero flotante sea valido (no NaN ni Inf)"""
-    return not math.isnan(v) and not math.isinf(v)
+class StaticEntity(world.StaticEntity):
+    changed = False
+    def __init__(self, entity_id, header, chunk):
+        super().__init__(entity_id, header, chunk)
+        self.packet = static.StaticEntityPacket()
+        self.packet.header = header
+        self.packet.entity_id = entity_id
+        self.packet.chunk_x, self.packet.chunk_y = chunk.pos
+
+    def update(self):
+        super().update()
+        self.changed = True
+        update_packet = self.world.server.update_packet
+        update_packet.static_entities.append(self.packet)
 
 
-class AntiCheatConnection(ConnectionScript):
-    def on_load(self):
-        """Inicializa todas las variables de deteccion de trampas"""
-        # Tiempo de combate
-        self.combat_end_time = 0
-        self.last_glider_active = 0
-        self.last_attacking = 0
+class Chunk(world.Chunk):
+    def update(self):
+        self.world.server.updated_chunks.add(self)
 
-        # Contador de abusos
-        self.glider_count = 0
-        self.attack_count = 0
+    def on_update(self, update_packet):
+        item_list = packets.ChunkItems()
+        item_list.chunk_x, item_list.chunk_y = self.pos
+        item_list.items = self.items
+        update_packet.chunk_items.append(item_list)
 
-        # Actualizacion de entidad
-        self.time_since_update = 0
-        self.last_entity_update = None
-        self.last_update_mode = 0
 
-        # Salud y mana
-        self.max_health = 0
-        self.last_mana = 0
-        self.last_health = 0
-        self.mana = 0
-        self.health = 0
+class World(world.World):
+    chunk_class = Chunk
+    entity_class = Entity
+    static_entity_class = StaticEntity
 
-        # Vuelo y aire
-        self.air_time = 0
-        self.hit_distance_strikes = 0
-        self.is_dead = False
+    def __init__(self, server, *arg, **kw):
+        super().__init__(*arg, **kw)
+        self.server = server
 
-        # Velocidad
-        self.last_pos = None
-        self.last_speed_check = 0
-        self.time_traveled = 0
-        self.distance_traveled = 0
 
-        # Enfriamiento de habilidades
-        self.cooldown_strikes = 0
-        self.ability_cooldown = {}
+class CubeWorldConnection(asyncio.Protocol):
+    """
+    Protocol used for players
+    """
+    has_joined = False
+    entity_id = None
+    entity = None
+    disconnected = False
+    scripts = None
+    chunk = None
+    mounted_entity = None
 
-        # Golpes
-        self.last_hit_time = 0
-        self.last_hit_strikes = 0
-        self.last_hit_check = 0
-        self.hit_counter = 0
-        self.hit_counter_strikes = 0
-        self.max_hp_strikes = 0
+    def __init__(self, server):
+        self.server = server
+        self.world = server.world
+        self.loop = server.loop
 
-        # Recuperacion de golpes al conectar
-        self.last_hit_time_catchup = self.loop.time() + 10
-        self.last_hit_time_catchup_count = -10
+    def connection_made(self, transport):
+        self.transport = transport
+        self.address = transport.get_extra_info('peername')
 
-        # Cargar configuracion
+        accept = self.server.scripts.call('on_connection_attempt',
+                                          address=self.address).result
+
+        # hardban
+        if accept is False:
+            self.transport.abort()
+            self.disconnected = True
+            return
+
+        # enable TCP_NODELAY
+        sock = transport.get_extra_info('socket')
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+
+        # ban with message
+        if accept is not None:
+            join_packet.entity_id = 1
+            self.send_packet(join_packet)
+
+            def disconnect():
+                self.disconnected = False
+                chat_packet.entity_id = 0
+                chat_packet.value = accept
+                self.send_packet(chat_packet)
+                self.disconnected = True
+                self.transport.close()
+
+            # need to add a small delay, since the client will otherwise
+            # ignore our chat message
+            self.loop.call_later(0.1, disconnect)
+            self.disconnected = True
+            self.transport.pause_reading()
+            return
+
+        server = self.server
+        if len(server.connections) >= server.config.base.max_players:
+            self.send_packet(server_full_packet)
+            self.disconnect()
+            return
+
+        self.packet_handlers = {
+            packets.ClientVersion.packet_id: self.on_version_packet,
+            packets.EntityUpdate.packet_id: self.on_entity_packet,
+            packets.ClientChatMessage.packet_id: self.on_chat_packet,
+            packets.InteractPacket.packet_id: self.on_interact_packet,
+            packets.HitPacket.packet_id: self.on_hit_packet,
+            packets.ShootPacket.packet_id: self.on_shoot_packet,
+            packets.PassivePacket.packet_id: self.on_passive_packet,
+            packets.ChunkDiscovered.packet_id: self.on_discover_packet
+        }
+
+        self.packet_handler = packets.PacketHandler(packets.CS_PACKETS,
+                                                    self.on_packet)
+
+        server.connections.add(self)
+        self.rights = AttributeSet()
+
+        self.scripts = ScriptManager()
+        server.scripts.call('on_new_connection', connection=self)
+
+    def data_received(self, data):
+        if self.is_closing():
+            return
+        self.packet_handler.feed(data)
+
+    def is_closing(self):
+        return self.disconnected or self.transport.is_closing()
+
+    def disconnect(self, reason=None):
+        if self.is_closing():
+            return
+        self.transport.close()
+        self.connection_lost(reason)
+
+    def connection_lost(self, reason):
+        if self.disconnected:
+            return
+        self.disconnected = True
+        self.server.connections.discard(self)
+        if self.has_joined:
+            del self.server.players[self]
+            message = 'Jugador %s se a desconectado' % self.name
+            print(message)
+        if self.entity is not None:
+            self.entity.destroy()
+        if self.entity_id is not None:
+            # need to handle this here, since the player may not have an
+            # entity yet
+            self.world.entity_ids.put_back(self.entity_id)
+        if self.scripts is not None:
+            self.scripts.unload()
+
+    # packet methods
+
+    def send_data(self, data):
+        if self.is_closing():
+            return
+        self.transport.write(data)
+
+    def send_packet(self, packet):
+        if self.is_closing():
+            return
+        data = packets.write_packet(packet)
+        self.transport.write(data)
+
+    def on_packet(self, packet):
+        if self.is_closing():
+            return
+        if packet is None:
+            self.on_invalid_packet('data')
+            return
+        handler = self.packet_handlers.get(packet.packet_id, None)
+        if handler is None:
+            # print 'Unhandled client packet: %s' % packet.packet_id
+            return
+        handler(packet)
+
+    def on_version_packet(self, packet):
+        if packet.version != constants.CLIENT_VERSION:
+            mismatch_packet.version = constants.CLIENT_VERSION
+            self.send_packet(mismatch_packet)
+            self.disconnect()
+            return
+        self.entity_id = self.world.entity_ids.pop()
+        join_packet.entity_id = self.entity_id
+        self.send_packet(join_packet)
+        seed_packet.seed = self.server.config.base.seed
+        self.send_packet(seed_packet)
+
+    def on_entity_packet(self, packet):
+        if self.entity is None:
+            self.entity = self.world.create_entity(self.entity_id)
+            self.entity.connection = self
+
+        self.old_entity = self.entity.copy()
+        mask = packet.update_entity(self.entity)
+        if not self.has_joined and entitydata.is_name_set(mask):
+            self.on_join()
+            return
+
+        self.scripts.call('on_entity_update', mask=mask)
+        # XXX clean this up
+        if entitydata.is_pos_set(mask):
+            self.on_pos_update()
+        if entitydata.is_vel_set(mask):
+            if self.mounted_entity:
+                self.mount(None)
+        if entitydata.is_mode_set(mask):
+            self.scripts.call('on_mode_update')
+        if entitydata.is_class_set(mask):
+            self.scripts.call('on_class_update')
+        if entitydata.is_name_set(mask):
+            self.on_name_update()
+        if entitydata.is_multiplier_set(mask):
+            self.scripts.call('on_multiplier_update')
+        if entitydata.is_level_set(mask):
+            self.scripts.call('on_level_update')
+        if entitydata.is_equipment_set(mask):
+            self.scripts.call('on_equipment_update')
+        if entitydata.is_skill_set(mask):
+            self.scripts.call('on_skill_update')
+        if entitydata.is_appearance_set(mask):
+            self.scripts.call('on_appearance_update')
+        if entitydata.is_charged_mp_set(mask):
+            self.scripts.call('on_charged_mp_update')
+        if entitydata.is_flags_set(mask):
+            self.scripts.call('on_flags_update')
+        if entitydata.is_consumable_set(mask):
+            self.scripts.call('on_consumable_update')
+
+    def mount(self, entity):
+        if self.mounted_entity:
+            self.mounted_entity.on_unmount(self)
+        self.mounted_entity = entity
+
+    def on_name_update(self):
+        if self.old_entity.name:
+            print(self.old_entity.name, 'cambio de nombre a', self.entity.name)
+        if self.entity:
+            self.entity.full_update = True
+        self.scripts.call('on_name_update')
+
+    def on_pos_update(self):
         try:
-            config = self.server.config.anticheat
-            self.level_cap = config.level_cap
-            self.allow_dual_wield = config.allow_dual_wield
-            self.rarity_cap = config.rarity_cap
-            self.name_filter = config.name_filter
-            self.log_level = config.log_level
-            self.log_message = config.log_message
-            self.disconnect_message = config.disconnect_message
-            self.irc_log_level = config.irc_log_level
-            self.glider_abuse_count = config.glider_abuse_count
-            self.cooldown_margin = config.cooldown_margin
-            self.max_hit_distance = config.max_hit_distance ** 2
-            self.max_hit_distance_strikes = config.max_hit_distance_strikes
-            self.max_cooldown_strikes = config.max_cooldown_strikes
-            self.max_air_time = config.max_air_time
-            self.speed_margin = config.speed_margin
-            self.last_hit_margin = config.last_hit_margin
-            self.max_last_hit_strikes = config.max_last_hit_strikes
-            self.max_hit_counter_strikes = config.max_hit_counter_strikes
-            self.max_hit_counter_difference = config.max_hit_counter_difference
-            self.max_max_hp_strikes = config.max_max_hp_strikes
-            self.max_last_hit_time_catchup = config.max_last_hit_time_catchup
-            self.max_damage = config.max_damage
-        except Exception as e:
-            self.log("Error cargando configuracion: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-            raise
+            chunk_pos = get_chunk(self.position)
+        except ValueError:
+            self.on_invalid_packet('position')
+            return
+        if not self.chunk or chunk_pos != self.chunk.pos:
+            self.chunk = self.world.get_chunk(chunk_pos)
+        self.scripts.call('on_pos_update')
 
-    def on_join(self, event):
-        """Realiza comprobaciones completas al conectar un jugador"""
-        try:
-            if self.on_name_update() is False:
-                return False
+    def on_chat_packet(self, packet):
+        message = filter_string(packet.value).strip()
+        if not message:
+            return
+        message = self.on_chat(message)
+        if not message:
+            return
+        chat_packet.entity_id = self.entity_id
+        chat_packet.value = message
+        self.server.broadcast_packet(chat_packet)
+        print('%s: %s' % (self.name, message))
 
-            if self.on_class_update() is False:
-                return False
-
-            if self.on_equipment_update() is False:
-                return False
-
-            if self.on_level_update() is False:
-                return False
-
-            if self.on_skill_update() is False:
-                return False
-
-            if self.on_multiplier_update() is False:
-                return False
-
-            if self.on_flags_update() is False:
-                return False
-
-            if self.on_appearance_update() is False:
-                return False
-
-            if self.check_hostile_type() is False:
-                return False
-
-            self.update_max_health()
-            if self.check_max_health(True) is False:
-                return False
-        except Exception as e:
-            self.log("Error en on_join: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-            self.remove_cheater('error en verificacion de conexion')
-            return False
-
-    def update_max_health(self):
-        """Actualiza la salud maxima del personaje basado en su poder"""
-        try:
-            self.max_health = self.connection.entity.get_max_hp()
-        except Exception as e:
-            self.log("Error actualizando salud maxima: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def check_max_health(self, no_strikes=False):
-        """Verifica que la salud no exceda el maximo permitido"""
-        try:
-            entity = self.connection.entity
-            if entity.hp > self.max_health + 1:
-                self.max_hp_strikes += 1
-
-                if no_strikes or self.max_hp_strikes > self.max_max_hp_strikes:
-                    self.log("salud del personaje {hp} superior a la maxima {max}".format(
-                        hp=entity.hp, max=self.max_health), LOG_LEVEL_VERBOSE)
-                    self.remove_cheater('truco de salud')
-                    return False
-            else:
-                self.max_hp_strikes = 0
-        except Exception as e:
-            self.log("Error verificando salud maxima: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        return True
-
-    def on_name_update(self, event=None):
-        """Verifica nombre del personaje al conectar o cambiar"""
-        if self.has_illegal_name():
-            self.remove_cheater('nombre de personaje ilegal')
-            return False
-
-    def on_equipment_update(self, event=None):
-        """Verifica que el equipo sea legal"""
-        if self.has_illegal_items():
-            self.remove_cheater('objetos ilegales equipados')
-            return False
-
-        self.update_max_health()
-
-    def on_level_update(self, event=None):
-        """Verifica el nivel del personaje"""
-        if self.has_illegal_level():
-            self.remove_cheater('nivel de personaje ilegal, maximo: {}'.format(
-                self.level_cap))
-            return False
-
-        self.update_max_health()
-
-    def on_skill_update(self, event=None):
-        """Verifica la distribucion de habilidades"""
-        if self.has_illegal_skills():
-            self.remove_cheater('distribucion de habilidades ilegal')
-            return False
-
-    def on_mode_update(self, event=None):
-        """Verifica modo de combate y enfriamientos de habilidades"""
-        try:
-            entity = self.connection.entity
-
-            if (entity.current_mode == 0 and self.combat_end_time == 0):
-                self.combat_end_time = self.loop.time()
-
-            if entity.current_mode != 0:
-                self.combat_end_time = 0
-
-            if self.has_illegal_mode():
-                self.remove_cheater('modo de personaje ilegal (habilidad)')
-                return False
-
-            if entity.current_mode != 0:
-                if self.use_ability(entity.current_mode) is False:
-                    self.remove_cheater('truco de enfriamiento')
-                    return False
-        except Exception as e:
-            self.log("Error verificando modo: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def on_class_update(self, event=None):
-        """Verifica que la clase sea valida"""
-        if self.has_illegal_class():
-            self.remove_cheater('clase de personaje ilegal')
-            return False
-
-    def on_multiplier_update(self, event=None):
-        """Verifica que los multiplicadores de atributos sean legales"""
-        if self.has_illegal_multiplier():
-            self.remove_cheater('multiplicador de atributo ilegal')
-            return False
-
-    def on_charged_mp_update(self, event=None):
-        """Verifica mana cargado"""
-        if self.has_illegal_charged_mp():
-            self.remove_cheater('multiplicador de carga ilegal')
-            return False
-
-    def on_consumable_update(self, event=None):
-        """Verifica consumibles equipados"""
-        if self.has_illegal_consumable():
-            self.remove_cheater('consumible ilegal equipado')
-            return False
-
-    def on_flags_update(self, event=None):
-        """Verifica banderas de personaje"""
-        if self.has_illegal_flags():
-            self.remove_cheater('banderas de personaje ilegales')
-            return False
-
-    def on_appearance_update(self, event=None):
-        """Verifica apariencia del personaje"""
-        if self.has_illegal_appearance():
-            self.remove_cheater('apariencia de personaje ilegal')
-            return False
-
-    def on_entity_update(self, event):
-        """Verificaciones en tiempo real durante el juego"""
-        try:
-            entity = self.connection.entity
-            if self.last_entity_update is None:
-                self.last_entity_update = self.loop.time()
-                if not self.connection.has_joined:
-                    self.remove_cheater('actualizacion completa de entidad no enviada')
-                    return False
-
-            self.time_since_update = self.loop.time() - self.last_entity_update
-            self.last_entity_update = self.loop.time()
-
-            self.last_mana = self.mana
-            self.last_health = self.health
-
-            self.mana = entity.mp
-            self.health = entity.hp
-
-            if is_bit_set(event.mask, 7):
-                if self.check_hostile_type() is False:
-                    return False
-
-            if is_bit_set(event.mask, 27):
-                if self.check_max_health() is False:
-                    return False
-
-            if self.loop.time() - self.last_hit_check > 1.0:
-                self.last_hit_check = self.loop.time()
-                if self.check_last_hit() is False:
-                    return False
-
-            if self.check_flying() is False:
-                return False
-
-            if not self.is_dead and self.health <= 0:
-                self.is_dead = True
-                self.on_death()
-
-            if self.health > 0 and self.is_dead:
-                self.is_dead = False
-        except Exception as e:
-            self.log("Error en entity update: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def on_drop(self, event):
-        """Verifica objetos siendo soltados"""
-        try:
-            if self.is_item_illegal(event.item):
-                pack = ServerUpdate()
-                pack.reset()
-                action = PickupAction()
-                action.entity_id = self.connection.entity_id
-                action.item_data = event.item
-                pack.pickups.append(action)
-
-                self.connection.send_packet(pack)
-
-                self.remove_cheater('objeto ilegal soltado')
-                return False
-        except Exception as e:
-            self.log("Error verificando drop: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def on_hit(self, event):
-        """Verifica golpes y daño"""
-        try:
-            packet = event.packet
-            if packet.entity_id != self.connection.entity_id:
-                return False
-
-            damage = event.packet.damage
-
-            # Sanitizar valor de daño
-            if not is_valid_float(damage) or math.fabs(damage) > self.max_damage:
-                self.remove_cheater('daño de golpe invalido ({})'.format(damage))
-                return False
-
-            # Solo paquetes de daño, no curacion
-            if damage >= 0:
-                self.last_hit_time = self.loop.time()
-                self.hit_counter += 1
-
-            # Verificar distancia de golpe
-            hitdistance = (packet.pos - event.target.pos).squared_length
-            if hitdistance > self.max_hit_distance:
-                self.hit_distance_strikes += 1
-                if self.hit_distance_strikes > self.max_hit_distance_strikes:
-                    self.remove_cheater('distancia de golpe demasiado lejana, '
-                                      'o bien hace trampas o tiene mucho lag')
-                    return False
-            else:
-                self.hit_distance_strikes = 0
-        except Exception as e:
-            self.log("Error verificando golpe: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def on_death(self, event=None):
-        """Al morir, reinicia enfriamientos y contadores"""
-        try:
-            self.ability_cooldown = {}
-            self.last_hit_time_catchup = self.loop.time()
-            self.last_hit_time_catchup_count = -1
-        except Exception as e:
-            self.log("Error en muerte: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-    def log(self, message, loglevel=LOG_LEVEL_DEFAULT):
-        """Registra un mensaje de antitrampa en consola y web"""
-        if self.log_level >= loglevel:
-            # Mostrar en consola cuwo y capturar en web
-            full_message = CUWO_ANTICHEAT + " - " + message
-            print(full_message)
-        if self.irc_log_level >= loglevel:
+    def on_interact_packet(self, packet):
+        interact_type = packet.interact_type
+        item = packet.item_data
+        if interact_type == packets.INTERACT_DROP:
+            pos = self.position.copy()
+            pos.z -= constants.BLOCK_SCALE
+            if self.scripts.call('on_drop', item=item,
+                                 pos=pos).result is False:
+                return
+            self.server.drop_item(packet.item_data, pos)
+        elif interact_type == packets.INTERACT_PICKUP:
+            chunk = self.world.get_chunk((packet.chunk_x, packet.chunk_y))
             try:
-                self.server.scripts.irc.send(CUWO_ANTICHEAT + " - " + message)
-            except (KeyError, AttributeError):
-                self.disable_irc_logging()
-
-    def disable_irc_logging(self):
-        """Desactiva registro en IRC si no esta disponible"""
-        self.irc_log_level = 0
-        self.server.config.anticheat.irc_log_level = 0
-
-    def remove_cheater(self, reason):
-        """Banea a un jugador tramposero por IP"""
-        try:
-            connection = self.connection
-            
-            # Mensaje para consola del servidor (cuwo y web)
-            anticheat_msg = f"{CUWO_ANTICHEAT} - El jugador {connection.name}({connection.address[0]}) fue baneado (Razon: {reason})"
-            print(anticheat_msg)
-            
-            # Mensaje ÚNICO para el jugador baneado
-            disconnect_msg = f"anticheat: has sido baneado (Razon: {reason})"
-            connection.send_chat(disconnect_msg)
-
-            # Mensaje ÚNICO en el servidor para todos los jugadores
-            broadcast_msg = f"anticheat: El jugador {connection.name} a sido baneado (Razon: {reason})"
-            self.server.send_chat(broadcast_msg)
-
-            # Usar el sistema de bans por IP
+                item = chunk.remove_item(packet.item_index)
+            except IndexError:
+                return
+            self.give_item(item)
+        elif interact_type == packets.INTERACT_NORMAL:
+            chunk = self.world.get_chunk((packet.chunk_x, packet.chunk_y))
             try:
-                ban_script = self.server.scripts.ban
-                ip = connection.address[0]
-                player_name = connection.name if connection.name else "Desconocido"
-                
-                # Banear marca como 'anticheat'
-                ban_script.ban_ip(ip, reason, player_name, ban_by='anticheat')
-            except (KeyError, AttributeError) as e:
-                connection.disconnect()
+                chunk.get_entity(packet.item_index).interact(self)
+            except KeyError:
                 return
 
-            connection.disconnect()
-        except Exception as e:
-            try:
-                connection.disconnect()
-            except:
-                pass
-
-    def has_illegal_name(self):
-        """Verifica si el nombre del personaje es ilegal"""
+    def on_hit_packet(self, packet):
         try:
-            entity = self.connection.entity
-            if re.search(self.name_filter, entity.name) is None:
-                self.log("nombre de personaje no cumple requisitos: {}".format(
-                    entity.name), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando nombre: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        return False
+            target = self.world.entities[packet.target_id]
+        except KeyError:
+            return
 
-    def has_illegal_items(self):
-        """Verifica si hay objetos ilegales equipados"""
-        try:
-            entity = self.connection.entity
-            for slotindex in range(13):
-                if entity.equipment[slotindex].type == 0:
+        if self.scripts.call('on_hit',
+                             target=target,
+                             packet=packet).result is False:
+            return
+
+        self.server.update_packet.player_hits.append(packet)
+        if target.is_tgen:
+            self.world.add_hit(packet)
+            return
+        if target.hp <= 0:
+            return
+        target.hp -= packet.damage
+        if target.hp > 0:
+            return
+        self.scripts.call('on_kill', target=target)
+        if not target.connection:
+            return
+        target.connection.scripts.call('on_die', killer=self.entity)
+
+    def on_shoot_packet(self, packet):
+        self.server.update_packet.shoot_actions.append(packet)
+
+    def on_passive_packet(self, packet):
+        self.world.add_passive(packet)
+        self.server.update_packet.passive_actions.append(packet)
+
+    def on_discover_packet(self, packet):
+        # update static entities on client
+        extra_server_update.reset()
+        pos = (packet.x, packet.y)
+        if pos in self.server.world.chunks:
+            chunk = self.server.world.chunks[pos]
+            chunk.on_update(extra_server_update)
+            for static in chunk.static_entities.values():
+                if not static.changed:
                     continue
+                extra_server_update.static_entities.append(static.packet)
+        self.send_packet(extra_server_update)
 
-                if self.is_item_illegal(entity.equipment[slotindex]):
-                    return True
+    # handlers
 
-                if self.is_equipped_illegal(entity.equipment[slotindex], slotindex):
-                    return True
-        except Exception as e:
-            self.log("Error verificando items: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        return False
+    def on_invalid_packet(self, message):
+        name = self.name or self.entity_id or self.address[0]
+        print('Se recibieron datos %r no validos de %r, '
+              'desconectando' % (message, name))
+        self.packet_handler.stop()
+        self.disconnect()
 
-    def is_item_illegal(self, item):
-        """Verifica si un objeto individual es ilegal"""
+    def on_join(self):
+        if self.scripts.call('on_join').result is False:
+            return
+
+        message = 'Jugador %s se a conectado' % self.name
+        print(message)
+        for entity_id, entity in self.server.world.entities.items():
+            entity_packet.set_entity(entity, entity_id)
+            self.send_packet(entity_packet)
+
+        self.server.players[(self.entity_id,)] = self
+        self.has_joined = True
+
+    def on_command(self, command, parameters):
+        self.scripts.call('on_command', command=command, args=parameters)
+
+    def on_chat(self, message):
+        if message.startswith('/'):
+            command, args = parse_command(message[1:])
+            self.on_command(command, args)
+            return
+        event = self.scripts.call('on_chat', message=message)
+        if event.result is False:
+            return
+        return event.message
+
+    # other methods
+
+    def play_sound(self, name, pos=None, pitch=1.0, volume=1.0):
+        extra_server_update.reset()
+        sound = packets.SoundAction()
+        sound.set_name(name)
+        if pos is None:
+            pos = self.entity.pos
+        sound.pos = pos
+        sound.pitch = pitch
+        sound.volume = volume
+        extra_server_update.sound_actions.append(sound)
+        self.send_packet(extra_server_update)
+
+    def send_chat(self, value):
+        chat_packet.entity_id = 0
+        chat_packet.value = value
+        self.send_packet(chat_packet)
+
+    def give_item(self, item):
+        action = packets.PickupAction()
+        action.entity_id = self.entity_id
+        action.item_data = item
+        self.server.update_packet.pickups.append(action)
+
+    def send_lines(self, lines):
+        current_time = 0
+        for line in lines:
+            self.loop.call_later(current_time, self.send_chat, line)
+            current_time += 2
+
+    def kick(self, reason=None):
+        postfix = ': %s' % reason if reason is not None else ''
+        self.send_chat('Te han expulsado%s' % postfix)
+        self.server.send_chat('%s ha sido expulsado%s' % (self.name, postfix))
+        self.disconnect()
+
+    # convenience methods
+
+    @property
+    def position(self):
+        if self.entity is None:
+            return None
+        return self.entity.pos
+
+    @property
+    def name(self):
+        if self.entity is None:
+            return None
+        return self.entity.name
+
+
+class CubeWorldServer:
+    exit_code = None
+    world = None
+    old_time = None
+    skip_index = 0
+
+    def __init__(self, loop, config):
+        self.loop = loop
+        self.config = config
+        base = config.base
+
+        # game-related
+        self.update_packet = packets.ServerUpdate()
+        self.update_packet.reset()
+
+        self.connections = set()
+        self.players = MultikeyDict()
+
+        self.updated_chunks = set()
+
+        use_same_loop = base.update_fps == base.network_fps
+        if use_same_loop:
+            def update_callback():
+                self.update()
+                self.send_update()
+        else:
+            update_callback = self.update
+        self.update_loop = LoopingCall(update_callback)
+        self.update_loop.start(1.0 / base.update_fps, now=False)
+
+        if use_same_loop:
+            self.send_loop = self.update_loop
+        else:
+            self.send_loop = LoopingCall(self.send_update)
+            self.send_loop.start(1.0 / base.network_fps, now=False)
+
+        self.mission_loop = LoopingCall(self.update_missions)
+        self.mission_loop.start(base.mission_update_rate, now=False)
+
+        # world
+        self.world = World(self, self.loop, base.seed,
+                           use_tgen=base.use_tgen,
+                           use_entities=base.use_entities,
+                           chunk_retire_time=base.chunk_retire_time,
+                           debug=base.world_debug_info)
+        if base.world_debug_file is not None:
+            debug_fp = open(base.world_debug_file, 'wb')
+            self.world.set_debug(debug_fp)
+
+        # server-related
+        self.git_rev = base.get('git_rev', None)
+
+        self.passwords = {}
+        for k, v in base.passwords.items():
+            self.passwords[k.lower()] = v
+
+        self.scripts = ScriptManager()
+        for script in base.scripts:
+            self.load_script(script)
+
+        # time
+        self.extra_elapsed_time = 0.0
+        self.start_time = loop.time()
+        self.set_clock('12:00')
+
+        # start listening
+        self.loop.set_exception_handler(self.exception_handler)
+        self.loop.create_task(self.create_server(self.build_protocol,
+                                                 port=base.port,
+                                                 family=socket.AF_INET))
+
+    def exception_handler(self, loop, context):
+        exception = context.get('exception')
+        if isinstance(exception, TimeoutError):
+            pass
+        else:
+            loop.default_exception_handler(context)
+
+    def build_protocol(self):
+        return CubeWorldConnection(self)
+
+    def drop_item(self, item_data, pos):
+        item = packets.ChunkItemData()
+        item.drop_time = 750
+        # XXX provide sane values for these
+        item.scale = 0.1
+        item.rotation = 185.0
+        item.something3 = item.something5 = item.something6 = 0
+        item.pos = pos
+        item.item_data = item_data
+        self.world.get_chunk(get_chunk(pos)).add_item(item)
+
+    def add_packet_list(self, items, l, size):
+        for item in iterate_packet_list(l):
+            items.append(item.data.copy())
+
+    def handle_tgen_packets(self, in_queue):
+        if in_queue is None:
+            return
+
+        p = self.update_packet
+        self.add_packet_list(p.player_hits, in_queue.player_hits,
+                             in_queue.player_hits_size)
+        self.add_packet_list(p.sound_actions, in_queue.sound_actions,
+                             in_queue.sound_actions_size)
+        self.add_packet_list(p.particles, in_queue.particles,
+                             in_queue.particles_size)
+        self.add_packet_list(p.block_actions, in_queue.block_actions,
+                             in_queue.block_actions_size)
+        self.add_packet_list(p.shoot_actions, in_queue.shoot_packets,
+                             in_queue.shoot_packets_size)
+        self.add_packet_list(p.kill_actions, in_queue.kill_actions,
+                             in_queue.kill_actions_size)
+        self.add_packet_list(p.damage_actions, in_queue.damage_actions,
+                             in_queue.damage_actions_size)
+        self.add_packet_list(p.passive_actions, in_queue.passive_packets,
+                             in_queue.passive_packets_size)
+        self.add_packet_list(p.missions, in_queue.missions,
+                             in_queue.missions_size)
+
+    def update_missions(self):
+        max_dist = self.config.base.mission_max_distance
+        p = self.update_packet
+        added = set()
+        for connection in self.players.values():
+            player_entity = connection.entity
+            if player_entity is None:
+                continue
+            min_pos = (player_entity.pos - max_dist) // constants.MISSION_SCALE
+            max_pos = (player_entity.pos + max_dist) // constants.MISSION_SCALE
+            for x in range(min_pos.x, max_pos.x):
+                for y in range(min_pos.y, max_pos.y):
+                    if (x, y) in added:
+                        continue
+                    added.add((x, y))
+                    reg_x = x // constants.MISSIONS_IN_REGION
+                    reg_y = y // constants.MISSIONS_IN_REGION
+                    try:
+                        reg = self.world.get_region((reg_x, reg_y))
+                    except KeyError:
+                        continue
+                    local_x = x % constants.MISSIONS_IN_REGION
+                    local_y = y % constants.MISSIONS_IN_REGION
+                    try:
+                        m = reg.get_mission((local_x, local_y))
+                    except (IndexError, ValueError):
+                        continue
+                    mission_packet = packets.MissionPacket()
+                    mission_packet.x = x
+                    mission_packet.y = y
+                    mission_packet.something1 = 0
+                    mission_packet.something2 = 0
+                    mission_packet.info = m.info
+                    p.missions.append(mission_packet)
+
+    def send_entity_data(self, entity):
+        base = self.config.base
+
+        # full entity packet for new, close players
+        entity_packet.set_entity(entity, entity.entity_id)
+        full = packets.write_packet(entity_packet)
+
+        # pos entity packet
+        if not entity.is_tgen:
+            entity_packet.set_entity(entity, entity.entity_id,
+                                     entitydata.POS_FLAG)
+            only_pos = packets.write_packet(entity_packet)
+
+        # reduced rate packet
+        skip_reduced = self.skip_index != 0
+        entity_packet.set_entity(entity, entity.entity_id,
+                                 entitydata.POS_FLAG)
+        reduced = packets.write_packet(entity_packet)
+
+        max_distance = base.max_distance
+        max_reduce_distance = base.max_reduce_distance
+
+        old_close_players = entity.close_players
+        new_close_players = {}
+        for connection in self.players.values():
+            player_entity = connection.entity
+            if player_entity is None:
+                continue
+            if entity is player_entity:
+                continue
+            if entity.full_update:
+                connection.send_data(full)
+                new_close_players[connection] = entity.copy()
+                continue
+            dist = (player_entity.pos - entity.pos).length
+            if dist > max_distance:
+                if not entity.is_tgen:
+                    connection.send_data(only_pos)
+                continue
+            old_ref = old_close_players.get(connection, None)
+            if old_ref is None:
+                connection.send_data(full)
+                new_close_players[connection] = entity.copy()
+                continue
+            if dist > max_reduce_distance and skip_reduced:
+                connection.send_data(reduced)
+                new_close_players[connection] = old_ref
+                continue
+            new_mask = entitydata.get_mask(old_ref, entity)
+            entity_packet.set_entity(entity, entity.entity_id, new_mask)
+            connection.send_packet(entity_packet)
+            new_close_players[connection] = entity.copy()
+
+        entity.close_players = new_close_players
+        entity.full_update = False
+
+    def update(self):
+        self.scripts.call('update')
+        out_packets = self.world.update(self.update_loop.dt)
+        self.handle_tgen_packets(out_packets)
+
+    def send_update(self):
+        self.skip_index = (self.skip_index + 1) % self.config.base.reduce_skip
+        for entity in self.world.entities.values():
+            self.send_entity_data(entity)
+        self.broadcast_packet(update_finished_packet)
+
+        # other updates
+        update_packet = self.update_packet
+        for chunk in self.updated_chunks:
+            chunk.on_update(update_packet)
+        if not update_packet.is_empty():
+            self.broadcast_packet(update_packet)
+        update_packet.reset()
+
+        # reset drop times
+        for chunk in self.updated_chunks:
+            chunk.on_post_update()
+        self.updated_chunks.clear()
+
+        # time update
+        new_time = (self.get_time(), self.get_day())
+        if new_time != self.old_time:
+            time_packet.time = new_time[0]
+            time_packet.day = new_time[1]
+            self.broadcast_packet(time_packet)
+            self.old_time = new_time
+
+    def send_chat(self, value):
+        chat_packet.entity_id = 0
+        chat_packet.value = value
+        self.broadcast_packet(chat_packet)
+
+    def play_sound(self, name, pos=None, pitch=1.0, volume=1.0):
+        sound = packets.SoundAction()
+        sound.set_name(name)
+        sound.pitch = pitch
+        sound.volume = volume
+
+        if pos is not None:
+            sound.pos = pos
+            self.update_packet.sound_action.append(sound)
+            return
+
+        extra_server_update.reset()
+
+        for player in self.players.values():
+            sound.pos = player.entity.pos
+            extra_server_update.sound_actions = [sound]
+            player.send_packet(extra_server_update)
+
+    def broadcast_packet(self, packet):
+        data = packets.write_packet(packet)
+        for player in self.players.values():
+            player.send_data(data)
+
+    # line/string formatting options based on config
+
+    def format(self, value):
+        format_dict = {'server_name': self.config.base.server_name}
+        return value % format_dict
+
+    def format_lines(self, value):
+        lines = []
+        for line in value:
+            lines.append(self.format(line))
+        return lines
+
+    # script methods
+
+    def load_script(self, name, update=False):
         try:
-            # Nivel negativo
-            if item.level < 0:
-                self.log("nivel de objeto negativo: {}".format(item.level), LOG_LEVEL_VERBOSE)
-                return True
+            return self.scripts[name]
+        except KeyError:
+            pass
+        try:
+            mod = __import__('scripts.%s' % name, globals(), locals(), [name])
+            if update:
+                importlib.reload(mod)
+        except ImportError as e:
+            traceback.print_exc()
+            return None
+        script = mod.get_class()(self)
+        print('Script activado %r' % name)
+        return script
 
-            # Demasiados bloques de personalizacion
-            if item.upgrade_count > 32:
-                self.log("demasiados bloques de personalizacion: {}".format(
-                    item.upgrade_count), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Rareza excesiva
-            if item.rarity > self.rarity_cap:
-                self.log("rareza de objeto excesiva: {}".format(
-                    item.rarity), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Consumible con rareza
-            if item.type == 1 and item.rarity > 0:
-                self.log("consumible con rareza: {}".format(
-                    get_item_name(item)), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Receta ilegal
-            if item.type == 2:
-                if item.minus_modifier not in LEGAL_RECIPE_ITEMS:
-                    self.log("receta invalida tipo={}".format(
-                        item.minus_modifier), LOG_LEVEL_VERBOSE)
-                    return True
-
-                if not (item.material in LEGAL_ITEMS.get((item.minus_modifier, item.sub_type), ())):
-                    self.log("material invalido en receta", LOG_LEVEL_VERBOSE)
-                    return True
-
-                return False
-
-            # Verificar item tipo/subtipo
-            if (item.type, item.sub_type) not in LEGAL_ITEMS:
-                self.log("objeto invalido tipo={} subtipo={} item={}".format(
-                    item.type, item.sub_type, get_item_name(item)), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Verificar material
-            if item.material not in LEGAL_ITEMS.get((item.type, item.sub_type), ()):
-                self.log("material invalido: tipo={} material={} item={}".format(
-                    item.type, item.material, get_item_name(item)), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando item: {}".format(str(e)), LOG_LEVEL_VERBOSE)
+    def unload_script(self, name):
+        try:
+            self.scripts[name].unload()
+        except KeyError:
             return False
-
-        return False
-
-    def is_equipped_illegal(self, item, in_slotindex):
-        """Verifica si un objeto equipado es ilegal para su posicion"""
-        try:
-            entity = self.connection.entity
-
-            # Nivel muy alto
-            power_item = get_power(item.level)
-            power_char = get_power(entity.level)
-            if power_item > power_char:
-                self.log("nivel de objeto {} superior a nivel de personaje {}".format(
-                    item.level, entity.level), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Ranura no equipable
-            if item.type not in LEGAL_ITEMSLOTS:
-                self.log("tipo de objeto no equipable: tipo={}".format(item.type), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Ranura invalida
-            if in_slotindex not in LEGAL_ITEMSLOTS.get(item.type, ()):
-                self.log("ranura invalida para tipo: tipo={} ranura={}".format(
-                    item.type, in_slotindex), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Doble empunadura
-            if in_slotindex == 6 and item.sub_type in TWOHANDED_WEAPONS:
-                if (self.allow_dual_wield is False and entity.equipment[7].type != 0):
-                    self.log("error de doble empunadura detectado", LOG_LEVEL_VERBOSE)
-                    return True
-                if entity.equipment[7].sub_type in TWOHANDED_WEAPONS:
-                    self.log("doble empunadura con dos armas", LOG_LEVEL_VERBOSE)
-                    return True
-
-            if in_slotindex == 7 and item.sub_type in TWOHANDED_WEAPONS:
-                if (self.allow_dual_wield is False and entity.equipment[6].type != 0):
-                    self.log("error de doble empunadura en ranura 7", LOG_LEVEL_VERBOSE)
-                    return True
-
-            # Arma no permitida para clase
-            if (item.type == 3 and not item.sub_type in CLASS_WEAPONS.get(entity.class_type, ())):
-                self.log("arma no permitida para clase: clase={}".format(
-                    entity.class_type), LOG_LEVEL_VERBOSE)
-                return True
-
-            # Armadura no permitida para clase
-            if (item.type in ARMOR_IDS and 
-                    not item.material in CLASS_ARMOR.get(entity.class_type, ())):
-                self.log("armadura no permitida para clase: clase={}".format(
-                    entity.class_type), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando equipo: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def has_illegal_consumable(self):
-        """Verifica si el consumible equipado es ilegal"""
-        try:
-            entity = self.connection.entity
-            item = entity.consumable
-
-            if item.type == 0:
-                return False
-
-            if self.is_item_illegal(item):
-                return True
-
-            power_item = get_power(item.level)
-            power_char = get_power(entity.level)
-            if power_item > power_char:
-                self.log("nivel de consumible {} superior a nivel {}".format(
-                    item.level, entity.level), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando consumible: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def has_illegal_skills(self):
-        """Verifica si la distribucion de habilidades es legal"""
-        try:
-            entity = self.connection.entity
-            total_skillpoints = 0
-            for item in entity.skills:
-                if item < 0:
-                    self.log("puntos de habilidad negativo detectado", LOG_LEVEL_VERBOSE)
-                    return True
-
-                total_skillpoints += item
-
-            if total_skillpoints > (entity.level - 1) * 2:
-                self.log("mas puntos gastados que disponibles", LOG_LEVEL_VERBOSE)
-                return True
-
-            # Verificar prerequisitos de habilidades especiales
-            if entity.skills[1] > 0 and entity.skills[0] < 5:
-                self.log("maestro de mascotas sin prerequisitos", LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.skills[3] > 0 and entity.skills[2] < 5:
-                self.log("planeo sin prerequisitos", LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.skills[5] > 0 and entity.skills[4] < 5:
-                self.log("navegacion sin prerequisitos", LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.skills[7] > 0 and entity.skills[6] < 5:
-                self.log("habilidad 2 sin prerequisitos", LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.skills[8] > 0 and entity.skills[7] < 5:
-                self.log("habilidad 3 sin prerequisitos", LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando habilidades: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def has_illegal_mode(self):
-        """Verifica si el modo o habilidad es ilegal"""
-        try:
-            entity = self.connection.entity
-            mode = entity.current_mode
-
-            if mode == 0:
-                return False
-
-            if not mode in ABILITIES:
-                self.log("habilidad invalida: modo={}".format(mode), LOG_LEVEL_VERBOSE)
-                return True
-
-            ability = ABILITIES[mode]
-
-            if 'class' in ability:
-                if not entity.class_type in ability['class']:
-                    self.log("habilidad no permitida para clase", LOG_LEVEL_VERBOSE)
-                    return True
-
-            if 'spec' in ability:
-                if entity.specialization != ability['spec']:
-                    self.log("habilidad no permitida para especializacion", LOG_LEVEL_VERBOSE)
-                    return True
-
-            if 'weapon' in ability:
-                weap1 = entity.equipment[6].sub_type
-                weap2 = entity.equipment[7].sub_type
-
-                if entity.equipment[6].type == 0:
-                    weap1 = -1
-                if entity.equipment[7].type == 0:
-                    weap2 = -1
-
-                if (not weap1 in ability['weapon'] and not weap2 in ability['weapon']):
-                    self.log("habilidad no permitida para arma", LOG_LEVEL_VERBOSE)
-                    return True
-        except Exception as e:
-            self.log("Error verificando modo: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def use_ability(self, mode):
-        """Verifica si se puede usar una habilidad (enfriamiento)"""
-        try:
-            ability = ABILITIES.get(mode, {})
-            if 'cooldown' in ability:
-                min_cd = ability['cooldown']
-                last_used = self.ability_cooldown.get(mode, 0)
-
-                current_cd = self.loop.time() - last_used
-                if current_cd < min_cd - self.cooldown_margin:
-                    self.cooldown_strikes += 1
-                    if self.cooldown_strikes > self.max_cooldown_strikes:
-                        self.log("habilidad usada antes de enfriamiento", LOG_LEVEL_VERBOSE)
-                        return False
-                else:
-                    self.cooldown_strikes = 0
-
-                self.ability_cooldown[mode] = self.loop.time()
-        except Exception as e:
-            self.log("Error verificando habilidad: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
+        print('Script desactivado %r' % name)
         return True
 
-    def has_illegal_class(self):
-        """Verifica que la clase del personaje sea legal"""
+    def call_command(self, user, command, args):
+        """
+        Calls a command from an external interface, e.g. IRC, console
+        """
+        return self.scripts.call('on_command', user=user, command=command,
+                                 args=args).result
+
+    def get_mode(self):
+        return self.scripts.call('get_mode').result
+
+    # command convenience methods (for /help)
+
+    def get_commands(self):
+        for script in self.scripts.get():
+            if script.commands is None:
+                continue
+            for command in script.commands.values():
+                yield command
+
+    def get_command(self, name):
+        for script in self.scripts.get():
+            if script.commands is None:
+                continue
+            name = script.aliases.get(name, name)
+            command = script.commands.get(name, None)
+            if command:
+                return command
+
+    # binary data store methods
+
+    def load_data(self, name, default=None):
+        path = os.path.join(self.config.base.save_path, f'{name}.dat')
         try:
-            entity = self.connection.entity
+            with open(path, 'r', newline=None) as fp:
+                data = fp.read()
+        except IOError:
+            return default
+        return eval(data)
 
-            if not entity.class_type in LEGAL_CLASSES:
-                self.log("clase invalida: {}".format(entity.class_type), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando clase: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        return False
+    def save_data(self, name, value):
+        os.makedirs(self.config.base.save_path, exist_ok=True)
+        path = os.path.join(self.config.base.save_path, f'{name}.dat')
+        data = pprint.pformat(value, width=1)
+        with open(path, 'w') as fp:
+            fp.write(data)
 
-    def has_illegal_level(self):
-        """Verifica si el nivel del personaje es ilegal"""
+    # time methods
+
+    def set_clock(self, value):
+        day = self.get_day()
+        time = parse_clock(value)
+        self.start_time = self.loop.time()
+        self.extra_elapsed_time = day * constants.MAX_TIME + time
+
+    def get_elapsed_time(self):
+        dt = self.loop.time() - self.start_time
+        dt *= self.config.base.time_modifier * constants.NORMAL_TIME_SPEED
+        return dt * 1000 + self.extra_elapsed_time
+
+    def get_time(self):
+        return int(self.get_elapsed_time() % constants.MAX_TIME)
+
+    def get_day(self):
+        return int(self.get_elapsed_time() / constants.MAX_TIME)
+
+    def get_clock(self):
+        return get_clock_string(self.get_time())
+
+    # stop/restart
+
+    def stop(self, code=None):
+        print('Deteniendo servidor...')
+        self.exit_code = code
+        if self.world:
+            self.world.stop()
+        self.scripts.unload()
+        self.loop.stop()
+
+    # asyncio wrappers
+
+    def get_interface(self):
+        return self.config.base.network_interface
+
+    def create_datagram_endpoint(self, *arg, port=0, **kw):
+        host = self.get_interface()
+        addr = (host, port)
+        return self.loop.create_datagram_endpoint(*arg, local_addr=addr, **kw)
+
+    def create_server(self, *arg, **kw):
+        return self.loop.create_server(*arg, host=self.get_interface(), **kw)
+
+    def connect_connection(self, *arg, **kw):
+        host = self.get_interface()
+        return self.loop.create_connection(*arg, local_addr=(host, 0), **kw)
+
+
+def main():
+    # make sure we enable crash logging as early as possible
+    faulthandler.enable()
+
+    # for py2exe
+    if hasattr(sys, 'frozen'):
+        path = os.path.dirname(sys.executable)
+        root = os.path.abspath(os.path.join(path, '..'))
+        sys.path.append(root)
+
+    config = ConfigObject('./config')
+
+    if sys.platform == 'win32':
+        from cuwo.win32 import WindowsEventLoop
+        loop = WindowsEventLoop()
+        loop.set_clock_resolution(1 * 1e-3)
+        asyncio.set_event_loop(loop)
+    else:
         try:
-            entity = self.connection.entity
-            
-            if entity.level < 0:
-                self.log("nivel negativo: {}".format(entity.level), LOG_LEVEL_VERBOSE)
-                return True
-          
-            if entity.level > self.level_cap:
-                self.log("nivel superior al maximo: {} > {}".format(
-                    entity.level, self.level_cap), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando nivel: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        return False
+            import uvloop
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+            print('(using uvloop)')
+        except ImportError:
+            pass
+        loop = asyncio.get_event_loop()
 
-    def has_illegal_multiplier(self):
-        """Verifica si los multiplicadores de atributos son ilegales"""
-        try:
-            entity = self.connection.entity
+    if config.base.use_tgen:
+        from cuwo.download import download_dependencies
+        download_dependencies()
 
-            if entity.max_hp_multiplier != 100:
-                self.log("multiplicador vida invalido: {}".format(
-                    entity.max_hp_multiplier), LOG_LEVEL_VERBOSE)
-                return True
+    server = CubeWorldServer(loop, config)
 
-            if entity.shoot_speed != 1:
-                self.log("multiplicador ataque invalido: {}".format(
-                    entity.shoot_speed), LOG_LEVEL_VERBOSE)
-                return True
+    loop.add_signal_handler(signal.SIGINT, server.stop)
 
-            if entity.damage_multiplier != 1:
-                self.log("multiplicador daño invalido: {}".format(
-                    entity.damage_multiplier), LOG_LEVEL_VERBOSE)
-                return True
+    print('cuwo funcionando en el puerto %s' % config.base.port)
 
-            if entity.armor_multiplier != 1:
-                self.log("multiplicador armadura invalido: {}".format(
-                    entity.armor_multiplier), LOG_LEVEL_VERBOSE)
-                return True
+    if config.base.profile_file is None:
+        loop.run_forever()
+    else:
+        import cProfile
+        cProfile.run('loop.run_forever()', filename=config.base.profile_file)
 
-            if entity.resi_multiplier != 1:
-                self.log("multiplicador resistencia invalido: {}".format(
-                    entity.resi_multiplier), LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando multiplicadores: {}".format(str(e)), LOG_LEVEL_VERBOSE)
+    sys.exit(server.exit_code)
 
-        return False
-
-    def has_illegal_charged_mp(self):
-        """Verifica si el mana cargado es ilegal"""
-        try:
-            entity = self.connection.entity
-
-            if entity.charged_mp > 1:
-                self.log("mana cargado superior a 1: {}".format(
-                    entity.charged_mp), LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.class_type == 1:
-                if entity.charged_mp < -2:
-                    self.log("mana cargado inferior a -2: {}".format(
-                        entity.charged_mp), LOG_LEVEL_VERBOSE)
-                    return True
-            else:
-                if entity.charged_mp < 0:
-                    self.log("mana cargado negativo: {}".format(
-                        entity.charged_mp), LOG_LEVEL_VERBOSE)
-                    return True
-        except Exception as e:
-            self.log("Error verificando mana: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def has_illegal_appearance(self):
-        """Verifica si la apariencia del personaje es legal"""
-        try:
-            entity = self.connection.entity
-            appearance = entity.appearance
-
-            if appearance.flags != 0:
-                self.log("banderas de apariencia invalidas", LOG_LEVEL_VERBOSE)
-                return True
-
-            if entity.entity_type not in APPEARANCES:
-                self.log("tipo de entidad invalido: {}".format(
-                    entity.entity_type), LOG_LEVEL_VERBOSE)
-                return True
-
-            app = APPEARANCES[entity.entity_type]
-            
-            # Verificar escala
-            if not is_similar(appearance.scale.x, app['scale']):
-                self.log("escala invalida", LOG_LEVEL_VERBOSE)
-                return True
-
-            if not is_similar(appearance.scale.y, app.get('radius', 0.96)):
-                self.log("radio invalido", LOG_LEVEL_VERBOSE)
-                return True
-
-            if not is_similar(appearance.scale.z, app.get('height', 2.16)):
-                self.log("altura invalida", LOG_LEVEL_VERBOSE)
-                return True
-
-            # Verificar modelos
-            for model_attr, model_key in [
-                ('head_model', 'model_head'),
-                ('hair_model', 'model_hair'),
-                ('hand_model', 'model_hand'),
-                ('foot_model', 'model_feet'),
-                ('body_model', 'model_body'),
-                ('tail_model', 'model_back'),
-                ('shoulder2_model', 'model_shoulder'),
-                ('wing_model', 'model_wing')
-            ]:
-                try:
-                    model_value = getattr(appearance, model_attr)
-                    if model_value not in app.get(model_key, []):
-                        self.log("modelo invalido: {}".format(model_attr), LOG_LEVEL_VERBOSE)
-                        return True
-                except:
-                    pass
-
-            # Verificar escalas de modelos
-            scale_checks = [
-                ('head_scale', 'scale_head'),
-                ('hand_scale', 'scale_hand'),
-                ('body_scale', 'scale_body'),
-                ('foot_scale', 'scale_feet'),
-                ('shoulder2_scale', 'scale_shoulder'),
-                ('weapon_scale', 'scale_weapon'),
-                ('tail_scale', 'scale_back'),
-                ('wing_scale', 'scale_wing'),
-                ('shoulder_scale', 'scale_unknown')
-            ]
-            
-            for scale_attr, scale_key in scale_checks:
-                try:
-                    scale_value = getattr(appearance, scale_attr)
-                    if not is_similar(scale_value, app.get(scale_key, 1.0)):
-                        self.log("escala de modelo invalida: {}".format(scale_attr), LOG_LEVEL_VERBOSE)
-                        return True
-                except:
-                    pass
-
-            # Verificar rotaciones
-            rotation_checks = [
-                ('body_pitch', 0),
-                ('arm_pitch', 0),
-                ('arm_roll', 0),
-                ('arm_yaw', 0),
-                ('feet_pitch', 0),
-                ('wing_pitch', 0),
-                ('back_pitch', 0)
-            ]
-            
-            for rot_attr, rot_val in rotation_checks:
-                try:
-                    if getattr(appearance, rot_attr) != rot_val:
-                        self.log("rotacion invalida: {}".format(rot_attr), LOG_LEVEL_VERBOSE)
-                        return True
-                except:
-                    pass
-
-        except Exception as e:
-            self.log("Error verificando apariencia: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def has_illegal_flags(self):
-        """Verifica si hay banderas ilegales de personaje"""
-        try:
-            entity = self.connection.entity
-            flags = entity.flags
-
-            # Sigilo solo para guardabosque
-            if flags & STEALTH_FLAG and entity.class_type != RANGER_CLASS:
-                self.log("clase no guardabosque usando sigilo", LOG_LEVEL_VERBOSE)
-                return True
-
-            # Contador de ataque/planeo para detectar abuso
-            if flags & ATTACKING_FLAG:
-                self.last_attacking = self.loop.time()
-                self.attack_count += 1
-
-            if flags & GLIDER_FLAG:
-                self.last_glider_active = self.loop.time()
-                self.glider_count += 1
-
-            # Reiniciar si no ha atacado ni planeado en 0.75s
-            if (self.loop.time() - self.last_glider_active > 0.75 or
-                    self.loop.time() - self.last_attacking > 0.75):
-                self.glider_count = 0
-                self.attack_count = 0
-
-            # Detectar abuso de planeo/ataque
-            if (self.glider_count > self.glider_abuse_count and
-                    self.attack_count > self.glider_abuse_count):
-                self.log("abuso de planeo detectado", LOG_LEVEL_VERBOSE)
-                return True
-        except Exception as e:
-            self.log("Error verificando banderas: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-
-        return False
-
-    def check_flying(self):
-        """Verifica si el jugador esta volando sin permiso"""
-        try:
-            entity = self.connection.entity
-            flags = entity.flags
-            
-            # En aire cuando: no planeo, no en tierra, no nadando, no escalando
-            if not (flags & GLIDER_FLAG
-                    or is_bit_set(entity.physics_flags, 0)
-                    or is_bit_set(entity.physics_flags, 1)
-                    or is_bit_set(entity.physics_flags, 2)
-                    or entity.hp <= 0):
-                self.air_time += self.time_since_update
-
-                if self.air_time > self.max_air_time:
-                    self.remove_cheater('truco de vuelo')
-                    return False
-            else:
-                self.air_time = 0
-        except Exception as e:
-            self.log("Error verificando vuelo: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        
-        return True
-
-    def check_hit_counter(self):
-        """Verifica que el contador de golpes sea consistente"""
-        try:
-            entity = self.connection.entity
-
-            if entity.hit_counter < 0:
-                self.log("contador de golpes negativo", LOG_LEVEL_VERBOSE)
-                self.remove_cheater('contador de golpes ilegal')
-                return False
-
-            if self.loop.time() - self.last_hit_time > 4 + self.last_hit_margin:
-                self.hit_counter = 0
-
-            hit_counter_diff = entity.hit_counter - self.hit_counter
-            if hit_counter_diff > self.max_hit_counter_difference:
-                self.hit_counter_strikes += 1
-                if self.hit_counter_strikes > self.max_hit_counter_strikes:
-                    self.log("desajuste de contador de golpes", LOG_LEVEL_VERBOSE)
-                    self.remove_cheater('contador de golpes ilegal')
-                    return False
-            else:
-                self.hit_counter_strikes = 0
-        except Exception as e:
-            self.log("Error verificando contador: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        
-        return True
-
-    def check_hostile_type(self):
-        """Verifica que el tipo hostil sea correcto"""
-        try:
-            entity = self.connection.entity
-            if entity.hostile_type != 0:
-                self.log("tipo hostil invalido: {}".format(entity.hostile_type), LOG_LEVEL_VERBOSE)
-                self.remove_cheater('tipo hostil ilegal')
-                return False
-        except Exception as e:
-            self.log("Error verificando tipo hostil: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-        
-        return True
-
-    def check_last_hit(self):
-        """Verifica que el ultimo golpe sea consistente con el tiempo"""
-        try:
-            entity = self.connection.entity
-            if entity.hp <= 0:
-                return True
-
-            last_hit_rc = (float(entity.last_hit_time) / 1000.0)
-            if self.last_hit_time == 0:
-                self.last_hit_time = self.loop.time() - last_hit_rc
-            last_hit_pk = self.loop.time() - self.last_hit_time
-
-            time_diff = last_hit_pk - last_hit_rc
-            if abs(time_diff) > self.last_hit_margin:
-                self.last_hit_strikes += 1
-                if self.last_hit_strikes > self.max_last_hit_strikes:
-                    self.log("desajuste de tiempo ultimo golpe", LOG_LEVEL_VERBOSE)
-                    self.remove_cheater('desajuste de tiempo ultimo golpe')
-                    return False
-
-                # Recuperacion permitida cada 15 segundos
-                if (self.loop.time() - self.last_hit_time_catchup > 15.0):
-                    self.last_hit_time_catchup = self.loop.time()
-                    self.last_hit_time_catchup_count = 0
-
-                if (self.last_hit_time_catchup_count < self.max_last_hit_time_catchup):
-                    self.last_hit_time_catchup_count += 1
-                    self.last_hit_strikes -= 1
-                    self.last_hit_time = self.loop.time() - last_hit_rc
-            else:
-                self.last_hit_strikes = 0
-
-            return self.check_hit_counter()
-        except Exception as e:
-            self.log("Error verificando ultimo golpe: {}".format(str(e)), LOG_LEVEL_VERBOSE)
-            return True
-
-
-class AntiCheatServer(ServerScript):
-    """Script servidor para el antitrampa"""
-    connection_class = AntiCheatConnection
-
-
-def get_class():
-    """Retorna la clase del script del servidor"""
-    return AntiCheatServer
+if __name__ == '__main__':
+    main()
