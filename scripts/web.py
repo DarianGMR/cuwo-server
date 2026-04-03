@@ -677,8 +677,6 @@ class WebServer(ServerScript):
             
             self._write_session_marker()
             
-            logger.info("[OK] Servidor web iniciado correctamente")
-            
             if auto_open:
                 self.loop.call_later(1, lambda: self._open_browser(web_host, web_port))
         
@@ -717,7 +715,6 @@ class WebServer(ServerScript):
                                     original_print(f"Error guardando chat: {e}")
         
         builtins.print = patched_print
-        logger.info("[OK] Sistema de chat parcheado - monitoreando print()")
     
     def add_chat_message(self, player_name, message):
         """Agregar un mensaje al log de chat - SOLO si es de la sesion actual"""
