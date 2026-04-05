@@ -651,6 +651,7 @@ class WebServer(ServerScript):
             
             # Parchar el sistema de chat
             self._patch_chat_system()
+            # NO llamar a _setup_logging_hook() - ya no es necesario
             
             if not os.path.exists(SITE_PATH):
                 logger.error(f"Carpeta '{SITE_PATH}' no encontrada")
@@ -685,39 +686,76 @@ class WebServer(ServerScript):
         except Exception as e:
             logger.error(f"Error inicializando servidor web: {e}\n{traceback.format_exc()}")
     
+    def _setup_logging_hook(self):
+        """Configura un hook para capturar logs - SOLO UNA VEZ"""
+        # Este método ahora está vacío porque el patching de print es suficiente
+        pass
+        
+        # Crear un handler personalizado que capture logs
+        class ConsoleLogCapture(logging.Handler):
+            def __init__(self, web_server):
+                super().__init__()
+                self.web_server = web_server
+            
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    self.web_server.add_log_line(msg)
+                except Exception:
+                    self.handleError(record)
+        
+        # Agregar handler a los loggers principales
+        handler = ConsoleLogCapture(self)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger('cuwo').addHandler(handler)
+    
     def _patch_chat_system(self):
-        """Reemplazar print() con una version que guarde en chat.log y consola.log"""
+        """Reemplazar print() con una version que guarde en consola.log una ÚNICA vez"""
         import builtins
         
         original_print = builtins.print
         web_server = self
         
+        # Conjunto para evitar duplicados (almacena hash del mensaje)
+        printed_messages = set()
+        
         def patched_print(*args, **kwargs):
-            """Print parcheado que captura mensajes de chat y consola"""
-            # Llamar al print original
+            """Print parcheado que captura mensajes sin duplicados"""
+            # Convertir args a string
+            if args:
+                message_str = ' '.join(str(arg) for arg in args)
+            else:
+                message_str = ''
+            
+            # Crear hash del mensaje para detectar duplicados
+            msg_hash = hash(message_str)
+            
+            # Llamar al print original SIEMPRE
             original_print(*args, **kwargs)
             
+            # Agregar a consola web SOLO si no está duplicado
+            if msg_hash not in printed_messages and message_str.strip():
+                printed_messages.add(msg_hash)
+                web_server.add_log_line(message_str)
+            
             # Intentar extraer el mensaje de chat si tiene el formato "nombre: mensaje"
-            if args:
-                message_str = str(args[0])
-                
-                # Detectar si es un mensaje de chat con formato "nombre: mensaje"
-                # PERO EXCLUIR mensajes del anticheat y logs del sistema
-                if ':' in message_str and len(message_str) > 3:
-                    # Excluir mensajes que contienen caracteres especiales del sistema
-                    if not any(x in message_str for x in ['[', ']', '(', ')', 'anticheat', 'Jugador', 'cuwo', 'Script', 'Se recibieron', 'cambio de nombre']):
-                        parts = message_str.split(':', 1)
-                        if len(parts) == 2:
-                            player_name = parts[0].strip()
-                            chat_message = parts[1].strip()
-                            
-                            # Validar que el nombre solo contiene caracteres validos (no es un log del sistema)
-                            if player_name and all(c.isalnum() or c in ' -_' for c in player_name):
-                                if chat_message and not any(x in player_name for x in ['[', ']', '(', ')', 'anticheat', 'Jugador']):
-                                    try:
-                                        web_server.add_chat_message(player_name, chat_message)
-                                    except Exception as e:
-                                        original_print(f"Error guardando chat: {e}")
+            # PERO EXCLUIR mensajes del anticheat y logs del sistema
+            if ':' in message_str and len(message_str) > 3:
+                # Excluir mensajes que contienen caracteres especiales del sistema
+                if not any(x in message_str for x in ['[', ']', '(', ')', 'anticheat', 'Jugador', 'cuwo anti-cheat', 'Script', 'Se recibieron', 'cambio de nombre', 'IP', 'Tu IP', 'Razon', 'fue baneado', 'expulsado', 'conectado', 'desconectado']):
+                    parts = message_str.split(':', 1)
+                    if len(parts) == 2:
+                        player_name = parts[0].strip()
+                        chat_message = parts[1].strip()
+                        
+                        # Validar que el nombre solo contiene caracteres validos (no es un log del sistema)
+                        if player_name and all(c.isalnum() or c in ' -_' for c in player_name):
+                            if chat_message and len(player_name) < 50:  # Nombre no muy largo
+                                try:
+                                    web_server.add_chat_message(player_name, chat_message)
+                                except Exception as e:
+                                    original_print(f"Error guardando chat: {e}")
         
         builtins.print = patched_print
     
