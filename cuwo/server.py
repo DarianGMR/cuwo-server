@@ -226,6 +226,9 @@ class CubeWorldConnection(asyncio.Protocol):
             del self.server.players[self]
             message = 'Jugador %s se a desconectado' % self.name
             print(message)
+            
+            # Notificar a todos los jugadores en el chat del servidor
+            self.server.send_chat(f'Jugador {self.name} se a desconectado')
         if self.entity is not None:
             self.entity.destroy()
         if self.entity_id is not None:
@@ -431,6 +434,10 @@ class CubeWorldConnection(asyncio.Protocol):
 
         message = 'Jugador %s se a conectado' % self.name
         print(message)
+        
+        # Notificar a todos los jugadores en el chat del servidor
+        self.server.send_chat(f'Jugador {self.name} se a conectado')
+        
         for entity_id, entity in self.server.world.entities.items():
             entity_packet.set_entity(entity, entity_id)
             self.send_packet(entity_packet)
