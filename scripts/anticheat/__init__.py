@@ -402,7 +402,7 @@ class AntiCheatConnection(ConnectionScript):
             anticheat_msg = f"{CUWO_ANTICHEAT} - El jugador {connection.name}({connection.address[0]}) fue baneado (Razon: {reason})"
             print(anticheat_msg)
             
-            # Mensaje ÚNICO para el jugador baneado
+            # Mensaje ÚNICO para el jugador baneado (SOLO anticheat)
             disconnect_msg = f"anticheat: has sido baneado (Razon: {reason})"
             connection.send_chat(disconnect_msg)
 
@@ -410,14 +410,14 @@ class AntiCheatConnection(ConnectionScript):
             broadcast_msg = f"anticheat: El jugador {connection.name} a sido baneado (Razon: {reason})"
             self.server.send_chat(broadcast_msg)
 
-            # Usar el sistema de bans por IP
+            # Usar el sistema de bans por IP (sin enviar mensaje de ban normal)
             try:
                 ban_script = self.server.scripts.ban
                 ip = connection.address[0]
                 player_name = connection.name if connection.name else "Desconocido"
                 
-                # Banear marca como 'anticheat'
-                ban_script.ban_ip(ip, reason, player_name, ban_by='anticheat')
+                # Banear marca como 'anticheat' y send_message=False para que NO envíe mensaje adicional
+                ban_script.ban_ip(ip, reason, player_name, ban_by='anticheat', send_message=False)
             except (KeyError, AttributeError) as e:
                 connection.disconnect()
                 return
