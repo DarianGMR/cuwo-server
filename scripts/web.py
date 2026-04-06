@@ -752,7 +752,7 @@ class WebServer(ServerScript):
             if ':' in message_str and len(message_str) > 3:
                 # Excluir mensajes que contienen caracteres especiales del sistema
                 exclude_keywords = [
-                    '[', ']', '(', ')', 'anticheat', 'Jugador', 'cuwo anti-cheat', 
+                    '[', ']', 'anticheat', 'Jugador', 'cuwo anti-cheat', 
                     'Script', 'Se recibieron', 'cambio de nombre', 'IP', 'Tu IP', 
                     'Razon', 'fue baneado', 'expulsado', 'conectado', 'desconectado',
                     'Deteniendo', 'funcionando', 'navegador', 'uvloop', 'activado',
@@ -760,7 +760,10 @@ class WebServer(ServerScript):
                     '> ', 'PM)', 'Jugador'
                 ]
                 
-                if not any(x in message_str for x in exclude_keywords):
+                # Verificar si es un mensaje de PM del comando (console_message)
+                is_pm_console_message = ' (pm-' in message_str
+                
+                if is_pm_console_message or not any(x in message_str for x in exclude_keywords):
                     parts = message_str.split(':', 1)
                     if len(parts) == 2:
                         player_name = parts[0].strip()
