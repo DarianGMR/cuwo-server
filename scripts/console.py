@@ -103,10 +103,27 @@ class ConsoleServer(ServerScript):
         if command == 'stop':
             self.server.stop()
             return
+        
+        # Obtener referencia al web server para loguear
+        web_server = None
+        try:
+            for script in self.server.scripts.get():
+                if hasattr(script, 'add_log_line'):
+                    web_server = script
+                    break
+        except:
+            pass
+        
+        # Ejecutar comando
         ret = self.server.call_command(self.interface, command, args)
-        if not ret:
-            return
-        write_stdout(ret + '\n')
+        
+        # Mostrar respuesta en consola cuwo
+        if ret:
+            write_stdout(ret + '\n')
+        
+        # Loguear respuesta en web (SIN duplicar si viene de print en commands.py)
+        if ret and web_server:
+            web_server.add_log_line(ret)
 
     def on_unload(self):
         self.task.cancel()
