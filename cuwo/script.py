@@ -369,12 +369,12 @@ class ServerScript(BaseScript):
             # Capturar el traceback completo
             error_trace = traceback.format_exc()
             
-            # Imprimir en consola cuwo
+            # Imprimir en consola cuwo SOLO si no viene de la web
+            # Esto evita que se muestre dos veces (una desde print_exc y otra desde add_error_line)
             print(error_trace)
             
-            # Enviar también a la consola web
+            # Enviar también a la consola web (sin duplicar mediante print)
             try:
-                # Obtener la instancia del web server
                 web_server = None
                 for script in self.server.scripts.get():
                     if hasattr(script, 'add_error_line'):
