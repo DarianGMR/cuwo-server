@@ -459,42 +459,53 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                                 captured_output = output_buffer.getvalue().strip()
                                 captured_error = error_buffer.getvalue().strip()
                                 
+                                # Si capturamos error de stderr
                                 if captured_error:
                                     response_msg["success"] = False
                                     response_msg["error"] = captured_error
                                     self.server.web_server.add_log_line(f"> {command}")
                                     self.server.web_server.add_log_line(captured_error)
+                                # Si el resultado contiene error (incluyendo Traceback)
                                 elif result is not None and str(result).strip():
                                     result_str = str(result).strip()
                                     
-                                    error_keywords = [
-                                        "Error:",
-                                        "error",
-                                        "Traceback",
-                                        "Jugador invalido",
-                                        "No existe",
-                                        "no encontrado",
-                                        "AttributeError",
-                                        "TypeError",
-                                        "ValueError",
-                                        "KeyError",
-                                        "Exception",
-                                        "failed",
-                                        "invalid",
-                                    ]
-                                    
-                                    is_error = any(keyword.lower() in result_str.lower() for keyword in error_keywords)
-                                    
-                                    if is_error:
+                                    # Detectar si es un Traceback (error completo de Python)
+                                    if 'Traceback' in result_str:
+                                        # Es un traceback - enviarlo directamente a add_error_line para que se trate como bloque único
                                         response_msg["success"] = False
                                         response_msg["error"] = result_str
                                         self.server.web_server.add_log_line(f"> {command}")
-                                        self.server.web_server.add_log_line(result_str)
+                                        self.server.web_server.add_error_line(result_str)
                                     else:
-                                        response_msg["success"] = True
-                                        response_msg["output"] = result_str
-                                        self.server.web_server.add_log_line(f"> {command}")
-                                        self.server.web_server.add_log_line(result_str)
+                                        # Verificar si contiene otras palabras clave de error
+                                        error_keywords = [
+                                            "Error:",
+                                            "error",
+                                            "Jugador invalido",
+                                            "No existe",
+                                            "no encontrado",
+                                            "AttributeError",
+                                            "TypeError",
+                                            "ValueError",
+                                            "KeyError",
+                                            "Exception",
+                                            "failed",
+                                            "invalid",
+                                        ]
+                                        
+                                        is_error = any(keyword.lower() in result_str.lower() for keyword in error_keywords)
+                                        
+                                        if is_error:
+                                            response_msg["success"] = False
+                                            response_msg["error"] = result_str
+                                            self.server.web_server.add_log_line(f"> {command}")
+                                            self.server.web_server.add_log_line(result_str)
+                                        else:
+                                            response_msg["success"] = True
+                                            response_msg["output"] = result_str
+                                            self.server.web_server.add_log_line(f"> {command}")
+                                            self.server.web_server.add_log_line(result_str)
+                                # Si no hay salida
                                 elif captured_output:
                                     response_msg["success"] = True
                                     response_msg["output"] = captured_output
@@ -505,35 +516,28 @@ class SiteHTTPRequestHandler(SimpleHTTPRequestHandler):
                                     response_msg["output"] = f"Comando '{cmd_name}' ejecutado correctamente"
                                     self.server.web_server.add_log_line(f"> {command}")
                                     self.server.web_server.add_log_line(f"Comando '{cmd_name}' ejecutado correctamente")
-                                    
+                                        
                             except Exception as cmd_error:
                                 _executing_from_web = False
-                                error_type = type(cmd_error).__name__
-                                error_msg = str(cmd_error)
                                 error_trace = traceback.format_exc()
                                 
                                 response_msg["success"] = False
                                 response_msg["error"] = error_trace
                                 
                                 self.server.web_server.add_log_line(f"> {command}")
-                                
-                                for line in error_trace.split('\n'):
-                                    if line.strip():
-                                        self.server.web_server.add_log_line(line)
+                                # Usar add_error_line para que sea un bloque único con símbolo ✗
+                                self.server.web_server.add_error_line(error_trace)
                         
                     except Exception as e:
-                        error_msg = str(e)
                         error_trace = traceback.format_exc()
                         
                         response_msg["success"] = False
                         response_msg["error"] = error_trace
                         
                         self.server.web_server.add_log_line(f"> {command}")
-                        
-                        for line in error_trace.split('\n'):
-                            if line.strip():
-                                self.server.web_server.add_log_line(line)
-                    
+                        # Usar add_error_line para que sea un bloque único con símbolo ✗
+                        self.server.web_server.add_error_line(error_trace)
+                
             elif request == 'heal_player':
                 player_id = data.get('player_id')
                 if player_id is not None:
@@ -752,7 +756,7 @@ class WebServer(ServerScript):
             if ':' in message_str and len(message_str) > 3:
                 # Excluir mensajes que contienen caracteres especiales del sistema
                 exclude_keywords = [
-                    '[', ']', 'anticheat', 'Jugador', 'cuwo anti-cheat', 
+                    '[', ']', '(', ')', 'anticheat', 'Jugador', 'cuwo anti-cheat', 
                     'Script', 'Se recibieron', 'cambio de nombre', 'IP', 'Tu IP', 
                     'Razon', 'fue baneado', 'expulsado', 'conectado', 'desconectado',
                     'Deteniendo', 'funcionando', 'navegador', 'uvloop', 'activado',
@@ -760,10 +764,7 @@ class WebServer(ServerScript):
                     '> ', 'PM)', 'Jugador'
                 ]
                 
-                # Verificar si es un mensaje de PM del comando (console_message)
-                is_pm_console_message = ' (pm-' in message_str
-                
-                if is_pm_console_message or not any(x in message_str for x in exclude_keywords):
+                if not any(x in message_str for x in exclude_keywords):
                     parts = message_str.split(':', 1)
                     if len(parts) == 2:
                         player_name = parts[0].strip()
@@ -880,20 +881,19 @@ class WebServer(ServerScript):
             logger.error(f"Error escribiendo log: {e}")
     
     def add_error_line(self, error_text):
-        """Agregar linea de error con traceback completo"""
+        """Agregar línea de error como un bloque completo (traceback completo como un log)"""
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             
-            lines = error_text.split('\n')
-            for line in lines:
-                if line.strip():
-                    self.current_session_logs.append(line)
-                    if len(self.current_session_logs) > MAX_LOG_LINES:
-                        self.current_session_logs.pop(0)
-                    
-                    log_entry = f"[{timestamp}] {line}"
-                    with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                        f.write(log_entry + '\n')
+            # Agregar el traceback COMPLETO como UN SOLO log
+            self.current_session_logs.append(error_text)
+            if len(self.current_session_logs) > MAX_LOG_LINES:
+                self.current_session_logs.pop(0)
+            
+            # Escribir en archivo con timestamp
+            log_entry = f"[{timestamp}] {error_text}"
+            with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                f.write(log_entry + '\n')
         except Exception as e:
             logger.error(f"Error escribiendo error: {e}")
     
