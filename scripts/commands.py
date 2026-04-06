@@ -169,11 +169,14 @@ def pm(script, name, *message):
     # Mensaje que recibe el jugador que recibe el PM
     receiver_message = f"{sender_name} (pm): {message_text}"
     
-    # Mostrar en consola
+    # Mostrar en consola cuwo y chat web
     console_message = f"{sender_name} (pm-{receiver_name}): {message_text}"
     
     # Enviar mensaje privado al receptor
     player.send_chat(receiver_message)
+    
+    # Imprimir para que aparezca en consola cuwo y se capture en chat web
+    print(console_message)
     
     response = sender_message
     return response
