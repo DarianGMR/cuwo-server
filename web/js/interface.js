@@ -573,32 +573,27 @@ $(document).ready(function () {
                 if (totalLogs > currentLogLines) {
                     const newLogs = data.logs.slice(currentLogLines);
                     newLogs.forEach(logLine => {
-                        // Detectar simbolo inicial
-                        let isError = false;
-                        let displayLine = logLine;
+                        // Detectar si es un traceback o error (contiene "Traceback" en la primera línea)
+                        let isError = logLine.includes('Traceback') || logLine.includes('Error:') || 
+                                    logLine.includes('AttributeError') || logLine.includes('TypeError') ||
+                                    logLine.includes('ValueError') || logLine.includes('KeyError') ||
+                                    logLine.includes('Exception') || logLine.includes('IndentationError');
                         
-                        if (logLine.startsWith('✗')) {
-                            isError = true;
-                            displayLine = logLine.substring(7).trim();
-                        } else if (logLine.startsWith('✓')) {
-                            displayLine = logLine.substring(4).trim();
-                        }
-                        
-                        // Aplicar estilos segun el simbolo
+                        // Aplicar estilos
                         let symbolClass = isError ? 'console-error' : 'console-success';
                         let lineClass = isError ? 'console-line-error-command' : '';
                         let symbol = isError ? '✗' : '✓';
                         
-                        // Detectar si tiene multiples lineas
-                        const hasMultipleLines = displayLine.includes('\n');
+                        // Siempre usar pre para preservar formato de traceback
+                        const hasMultipleLines = logLine.includes('\n');
                         
-                        if (hasMultipleLines) {
-                            // Usar pre para preservar formato
-                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${symbol}</span><pre class="console-pre">${escapeHtml(displayLine)}</pre></div>`;
+                        if (hasMultipleLines || isError) {
+                            // Usar pre para preservar formato (traceback completo)
+                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${symbol}</span><pre class="console-pre">${escapeHtml(logLine)}</pre></div>`;
                             $('#consoleOutput').append(line);
                         } else {
-                            // Formato normal
-                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${symbol}</span> ${escapeHtml(displayLine)}</div>`;
+                            // Formato normal para líneas simples
+                            const line = `<div class="console-line ${lineClass}"><span class="${symbolClass}">${symbol}</span> ${escapeHtml(logLine)}</div>`;
                             $('#consoleOutput').append(line);
                         }
                     });
@@ -629,16 +624,14 @@ $(document).ready(function () {
                         // Solo hay "Servidor web conectado", reemplazar con logs reales
                         $('#consoleOutput').html('');
                         data.logs.forEach(logLine => {
-                            // Detectar simbolo inicial
-                            let isError = false;
-                            let displayLine = logLine;
+                            // Detectar si es error (contiene Traceback o Error)
+                            let isError = logLine.includes('Traceback') || logLine.includes('Error:') || 
+                                        logLine.includes('AttributeError') || logLine.includes('TypeError') ||
+                                        logLine.includes('ValueError') || logLine.includes('KeyError') ||
+                                        logLine.includes('Exception') || logLine.includes('IndentationError') ||
+                                        logLine.includes('NameError') || logLine.includes('ImportError');
                             
-                            if (logLine.startsWith('✗')) {
-                                isError = true;
-                                displayLine = logLine.substring(7).trim();
-                            } else if (logLine.startsWith('✓')) {
-                                displayLine = logLine.substring(4).trim();
-                            }
+                            let displayLine = logLine;
                             
                             // Aplicar estilos segun el simbolo
                             let symbolClass = isError ? 'console-error' : 'console-success';
@@ -926,6 +919,7 @@ $(document).ready(function () {
     updateServerInfo();
     updateBans();
     updateConsoleLogs();
+    updateChat();
     loadInitialConsoleLogs();
     
     // Cargar chat solo cuando se abre la pestaña por primera vez
@@ -940,19 +934,12 @@ $(document).ready(function () {
         updateServerInfo();
         updateBans();
         updateConsoleLogs();
-    }, 5000);
-
-        // INTERVALO SEPARADO PARA CHAT MÁS RÁPIDO: 1000ms
-    const chatInterval = setInterval(() => {
         updateChat();
     }, 1000);
     
     $(window).on('unload', function() {
         if (updateInterval) {
             clearInterval(updateInterval);
-        }
-        if (chatInterval) {
-            clearInterval(chatInterval);
         }
     });
 });
