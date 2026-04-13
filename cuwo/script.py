@@ -369,15 +369,8 @@ class ServerScript(BaseScript):
             # Capturar el traceback completo
             error_trace = traceback.format_exc()
             
-            # Verificar si se ejecuta desde la web
-            from scripts.web import _executing_from_web
-            
-            # Imprimir en consola cuwo SOLO si NO viene de la web
-            # Esto evita que se muestre dos veces en la consola web
-            if not _executing_from_web:
-                print(error_trace)
-            
-            # Retornar el traceback para que sea procesado por call_command del web
+            # Retornar el traceback para que sea procesado correctamente
+            # sin duplicarlo
             ret = error_trace
         return ret
 
