@@ -108,7 +108,7 @@ class ConsoleServer(ServerScript):
         web_server = None
         try:
             for script in self.server.scripts.get():
-                if hasattr(script, 'add_log_line'):
+                if hasattr(script, 'add_error_line'):
                     web_server = script
                     break
         except:
@@ -119,11 +119,19 @@ class ConsoleServer(ServerScript):
         
         # Mostrar respuesta en consola cuwo
         if ret:
-            write_stdout(ret + '\n')
-        
-        # Loguear respuesta en web (SIN duplicar si viene de print en commands.py)
-        if ret and web_server:
-            web_server.add_log_line(ret)
+            # Detectar si es un Traceback (error) para manejarlo especialmente
+            if 'Traceback' in ret:
+                # Es un error - imprimir con símbolo de error
+                write_stdout('✗ ' + ret + '\n')
+                # Loguear en web como error (sin duplicación)
+                if web_server and hasattr(web_server, 'add_error_line'):
+                    web_server.add_error_line(ret)
+            else:
+                # Es una respuesta normal
+                write_stdout(ret + '\n')
+                # Loguear respuesta normal en web
+                if ret and web_server and hasattr(web_server, 'add_log_line'):
+                    web_server.add_log_line(ret)
 
     def on_unload(self):
         self.task.cancel()
